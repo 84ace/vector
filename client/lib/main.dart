@@ -64,6 +64,7 @@ class _MainShellViewState extends State<MainShellView> {
   final List<C2Message> _globalMessages = [];
   final List<C2EventLog> _eventLogs = [];
   final Set<String> _consumedPairingTokens = {};
+  final Set<String> _activePairingDialogs = {};
   int _activeChatSubTab = 0;
   OperatorProfile? _activeChatPeer;
   OperatorProfile? _activeCallPeer;
@@ -446,9 +447,13 @@ class _MainShellViewState extends State<MainShellView> {
               isOnline: true,
             );
 
-            // If already paired with this operator, silently accept and do not trigger reuse loop
+            if (applicant.id == _myProfile.id || msg.senderId == _myProfile.id) {
+              return; // Ignore self-pairing requests
+            }
+
+            // If already paired with this operator or dialog active, ignore to prevent loops
             final isAlreadyPaired = _teamProfiles.any((p) => p.id == applicant.id);
-            if (isAlreadyPaired) {
+            if (isAlreadyPaired || _activePairingDialogs.contains(applicant.id)) {
               return;
             }
 
@@ -705,6 +710,9 @@ class _MainShellViewState extends State<MainShellView> {
   }
 
   void _notifyTokenReuseSecurityAlert(OperatorProfile applicant, String tokenId) {
+    if (_teamProfiles.any((p) => p.id == applicant.id) || _activePairingDialogs.contains(applicant.id)) return;
+    _activePairingDialogs.add(applicant.id);
+
     _addEventLog(
       'SECURITY WARNING: PAIRING CODE REUSE',
       'Operator ${applicant.callsign} submitted previously consumed pairing code ($tokenId). User review requested.',
@@ -758,6 +766,7 @@ class _MainShellViewState extends State<MainShellView> {
         actions: [
           TextButton(
             onPressed: () {
+              _activePairingDialogs.remove(applicant.id);
               Navigator.pop(ctx);
               _addEventLog('PAIRING REJECTED', 'User rejected reused pairing token ($tokenId) from ${applicant.callsign}', EventSeverity.warning);
             },
@@ -768,13 +777,14 @@ class _MainShellViewState extends State<MainShellView> {
             icon: const Icon(Icons.check_circle_outline, size: 16),
             label: const Text('ALLOW & PAIR ANYWAY', style: TextStyle(fontWeight: FontWeight.bold)),
             onPressed: () {
+              _activePairingDialogs.remove(applicant.id);
               Navigator.pop(ctx);
               _forceAddContact(applicant, tokenId: tokenId);
             },
           ),
         ],
       ),
-    );
+    ).then((_) => _activePairingDialogs.remove(applicant.id));
   }
 
   Future<void> _forceAddContact(OperatorProfile newProfile, {String tokenId = ''}) async {
@@ -893,7 +903,8 @@ class _MainShellViewState extends State<MainShellView> {
   }
 
   void _showPairingApprovalDialog(OperatorProfile applicant, String tokenId) {
-    if (_teamProfiles.any((p) => p.id == applicant.id)) return;
+    if (_teamProfiles.any((p) => p.id == applicant.id) || _activePairingDialogs.contains(applicant.id)) return;
+    _activePairingDialogs.add(applicant.id);
 
     showDialog(
       context: context,
@@ -923,12 +934,16 @@ class _MainShellViewState extends State<MainShellView> {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx),
+            onPressed: () {
+              _activePairingDialogs.remove(applicant.id);
+              Navigator.pop(ctx);
+            },
             child: const Text('REJECT', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: C2Colors.emeraldAccent, foregroundColor: Colors.black),
             onPressed: () {
+              _activePairingDialogs.remove(applicant.id);
               Navigator.pop(ctx);
               _addContactDirectly(applicant, tokenId: tokenId, sendPairRequest: false);
 
@@ -958,7 +973,7 @@ class _MainShellViewState extends State<MainShellView> {
           ),
         ],
       ),
-    );
+    ).then((_) => _activePairingDialogs.remove(applicant.id));
   }
 
   void _showIncomingCallAlert(OperatorProfile peer, {required bool isVideo}) {
@@ -1079,6 +1094,20 @@ class _MainShellViewState extends State<MainShellView> {
   }
 
   Future<void> _addContactDirectly(OperatorProfile newProfile, {String tokenId = '', bool sendPairRequest = true}) async {
+    if (newProfile.id == _myProfile.id) {
+      return; // Cannot pair with self
+    }
+
+    final isAlreadyPaired = _teamProfiles.any((p) => p.id == newProfile.id);
+    if (isAlreadyPaired) {
+      _showInAppNotification(
+        title: 'ALREADY PAIRED',
+        message: 'Operator ${newProfile.callsign} is already in your squad directory.',
+        color: Colors.cyanAccent,
+      );
+      return;
+    }
+
     // Only check consumed tokens when initiating a NEW pair request!
     // Response handshakes (sendPairRequest == false) MUST NOT trigger token reuse security warnings.
     if (sendPairRequest && tokenId.isNotEmpty && _consumedPairingTokens.contains(tokenId)) {

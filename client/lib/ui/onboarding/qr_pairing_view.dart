@@ -70,9 +70,17 @@ class _QrPairingViewState extends State<QrPairingView> {
     );
   }
 
+  DateTime? _lastScanTime;
+  String? _lastScannedPayload;
+
   void _parseAndAddContact(String rawText) {
     final text = rawText.trim();
     if (text.isEmpty) return;
+
+    final now = DateTime.now();
+    if (_lastScannedPayload == text && _lastScanTime != null && now.difference(_lastScanTime!).inSeconds < 3) {
+      return; // Ignore continuous frame scans of the same code within 3 seconds
+    }
 
     try {
       if (!text.startsWith('c2://pair?data=')) {
@@ -96,6 +104,24 @@ class _QrPairingViewState extends State<QrPairingView> {
         isOnline: true,
       );
 
+      if (newProfile.id == widget.myProfile.id) {
+        _lastScannedPayload = text;
+        _lastScanTime = now;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            backgroundColor: Colors.amberAccent,
+            duration: Duration(seconds: 3),
+            content: Text(
+              'THIS IS YOUR OWN PAIRING CODE.',
+              style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+            ),
+          ),
+        );
+        return;
+      }
+
+      _lastScannedPayload = text;
+      _lastScanTime = now;
       widget.onContactAdded(newProfile, tokenId);
       _pairingInputController.clear();
     } catch (_) {
