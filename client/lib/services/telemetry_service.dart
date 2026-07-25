@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter_compass/flutter_compass.dart';
@@ -90,7 +91,7 @@ class TelemetryService {
   }
 
   /// Request permissions and start live hardware tracking
-  Future<void> startReporting({Duration interval = const Duration(seconds: 5)}) async {
+  Future<void> startReporting({Duration interval = const Duration(seconds: 4)}) async {
     // 1. Request location permissions
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
@@ -104,7 +105,7 @@ class TelemetryService {
         initialPos ??= await Geolocator.getCurrentPosition(
           locationSettings: const LocationSettings(
             accuracy: LocationAccuracy.medium,
-            timeLimit: Duration(seconds: 3),
+            timeLimit: Duration(seconds: 8),
           ),
         );
         if (initialPos != null) {
@@ -114,13 +115,15 @@ class TelemetryService {
           _currentSpeed = initialPos.speed;
           _sendLatestTelemetry();
         }
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('[TELEMETRY_SERVICE] Initial position fetch error: $e');
+      }
 
-      // Subscribe to real GPS Stream
+      // Subscribe to real GPS Stream (distanceFilter: 0 for stationary desk testing & continuous updates)
       _positionSubscription = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
-          distanceFilter: 3,
+          distanceFilter: 0,
         ),
       ).listen((Position position) {
         _currentLat = position.latitude;
@@ -139,8 +142,23 @@ class TelemetryService {
       }
     });
 
-    // 3. Periodic hardware status reader (battery, SSID, network type)
+    // 3. Periodic hardware status reader & active GPS fallback if current lat is 0.0
     Timer.periodic(interval, (_) async {
+      if (_currentLat == 0.0 || _currentLng == 0.0) {
+        try {
+          final pos = await Geolocator.getCurrentPosition(
+            locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.low,
+              timeLimit: Duration(seconds: 3),
+            ),
+          );
+          _currentLat = pos.latitude;
+          _currentLng = pos.longitude;
+          _currentAlt = pos.altitude;
+          _currentSpeed = pos.speed;
+        } catch (_) {}
+      }
+
       try {
         _batteryLevel = await _battery.batteryLevel;
         final state = await _battery.onBatteryStateChanged.first;
@@ -158,6 +176,10 @@ class TelemetryService {
   }
 
   void _sendLatestTelemetry() {
+    if (_currentLat == 0.0 || _currentLng == 0.0) {
+      return; // Do not broadcast zero coordinates over network
+    }
+
     final tele = Telemetry(
       operatorId: myOperatorId,
       latitude: _currentLat,

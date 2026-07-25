@@ -370,30 +370,52 @@ class _TacticalMapViewState extends State<TacticalMapView> {
       );
     }
 
-    // 2. Team Member Markers (ONLY if valid telemetry with latitude != 0.0)
-    for (final peer in widget.teamProfiles) {
-      if (peer.id == widget.myProfile.id) continue;
-      final tele = widget.teamTelemetry[peer.id];
-      if (tele == null || tele.latitude == 0.0) continue; // Skip team members without active GPS fix
+    // 2. Team Member Markers from all active team telemetry updates
+    final Map<String, OperatorProfile> knownProfiles = {};
+    for (final p in widget.teamProfiles) {
+      knownProfiles[p.id] = p;
+    }
 
-      final pos = LatLng(tele.latitude, tele.longitude);
+    widget.teamTelemetry.forEach((opId, tele) {
+      if (opId == widget.myProfile.id) return;
+      if (tele.latitude == 0.0 || tele.longitude == 0.0) return;
+
+      final profile = knownProfiles[opId] ??
+          widget.teamProfiles.firstWhere(
+            (p) => p.id == opId || p.callsign.toUpperCase() == opId.toUpperCase(),
+            orElse: () {
+              final cleanCallsign = opId.startsWith('op-')
+                  ? opId.replaceFirst('op-', '').split('-').first.toUpperCase()
+                  : opId.toUpperCase();
+              return OperatorProfile(
+                id: opId,
+                callsign: cleanCallsign.isNotEmpty ? cleanCallsign : 'OPERATOR',
+                name: 'Squad Member',
+                role: OperatorRole.operator,
+                avatarBase64: '',
+                publicKey: '',
+                lastSeen: tele.timestamp,
+                isOnline: !tele.isOffline,
+              );
+            },
+          );
 
       markers.add(
         Marker(
           width: 48,
           height: 48,
-          point: pos,
+          point: LatLng(tele.latitude, tele.longitude),
           child: ProfileMarkerWidget(
-            profile: peer,
+            profile: profile,
             telemetry: tele,
             isSelected: false,
             onTap: () {
-              _showOperatorContextSheet(peer, tele);
+              _showOperatorContextSheet(profile, tele);
             },
           ),
         ),
       );
-    }
+    });
 
     return markers;
   }
