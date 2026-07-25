@@ -548,7 +548,7 @@ class _MainShellViewState extends State<MainShellView> {
 
     _meshClient.start();
     _p2pMeshEngine.start();
-    _telemetryService.startReporting(interval: const Duration(seconds: 4));
+    _telemetryService.startReporting();
 
     setState(() {
       _myProfileInitialized = true;

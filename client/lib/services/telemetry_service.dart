@@ -90,8 +90,22 @@ class TelemetryService {
     });
   }
 
+  Timer? _heartbeatTimer;
+  DateTime? _lastTelemetrySentTime;
+
+  /// Dynamic power-aware heartbeat interval (15 to 30 mins)
+  Duration get _heartbeatInterval {
+    if (_isCharging || _batteryLevel > 50) {
+      return const Duration(minutes: 15);
+    } else if (_batteryLevel >= 20) {
+      return const Duration(minutes: 20);
+    } else {
+      return const Duration(minutes: 30);
+    }
+  }
+
   /// Request permissions and start live hardware tracking
-  Future<void> startReporting({Duration interval = const Duration(seconds: 4)}) async {
+  Future<void> startReporting() async {
     // 1. Request location permissions
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
@@ -100,12 +114,13 @@ class TelemetryService {
 
     if (permission == LocationPermission.always ||
         permission == LocationPermission.whileInUse) {
+      // 2. IMMEDIATE PUSH ON APP START
       try {
         Position? initialPos = await Geolocator.getLastKnownPosition();
         initialPos ??= await Geolocator.getCurrentPosition(
           locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.medium,
-            timeLimit: Duration(seconds: 8),
+            accuracy: LocationAccuracy.high,
+            timeLimit: Duration(seconds: 5),
           ),
         );
         if (initialPos != null) {
@@ -113,17 +128,17 @@ class TelemetryService {
           _currentLng = initialPos.longitude;
           _currentAlt = initialPos.altitude;
           _currentSpeed = initialPos.speed;
-          _sendLatestTelemetry();
+          _sendLatestTelemetry(); // Immediate startup telemetry broadcast
         }
       } catch (e) {
-        debugPrint('[TELEMETRY_SERVICE] Initial position fetch error: $e');
+        debugPrint('[TELEMETRY_SERVICE] Initial startup GPS push error: $e');
       }
 
-      // Subscribe to real GPS Stream (distanceFilter: 0 for stationary desk testing & continuous updates)
+      // 3. Movement GPS Stream with 3-meter distance filter
       _positionSubscription = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
-          distanceFilter: 0,
+          distanceFilter: 3, // 3-meter movement filter
         ),
       ).listen((Position position) {
         _currentLat = position.latitude;
@@ -134,7 +149,7 @@ class TelemetryService {
       });
     }
 
-    // 2. Subscribe to real Compass Stream
+    // 4. Subscribe to Compass Stream
     _compassSubscription = FlutterCompass.events?.listen((CompassEvent event) {
       final direction = event.heading;
       if (direction != null) {
@@ -142,14 +157,28 @@ class TelemetryService {
       }
     });
 
-    // 3. Periodic hardware status reader & active GPS fallback if current lat is 0.0
-    Timer.periodic(interval, (_) async {
-      if (_currentLat == 0.0 || _currentLng == 0.0) {
+    // 5. Power-Aware Heartbeat Timer (checks every 30 seconds)
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+      try {
+        _batteryLevel = await _battery.batteryLevel;
+        final state = await _battery.onBatteryStateChanged.first;
+        _isCharging = state == BatteryState.charging;
+      } catch (_) {}
+
+      final now = DateTime.now();
+      final timeSinceLastSent = _lastTelemetrySentTime == null
+          ? Duration.zero
+          : now.difference(_lastTelemetrySentTime!);
+
+      // Force push if heartbeat interval elapsed or initial location missing
+      if (_lastTelemetrySentTime == null || timeSinceLastSent >= _heartbeatInterval || _currentLat == 0.0) {
+        debugPrint('[TELEMETRY_SERVICE] Heartbeat push triggered (interval: ${_heartbeatInterval.inMinutes}m, battery: $_batteryLevel%, charging: $_isCharging)');
         try {
           final pos = await Geolocator.getCurrentPosition(
             locationSettings: const LocationSettings(
-              accuracy: LocationAccuracy.low,
-              timeLimit: Duration(seconds: 3),
+              accuracy: LocationAccuracy.medium,
+              timeLimit: Duration(seconds: 4),
             ),
           );
           _currentLat = pos.latitude;
@@ -157,15 +186,9 @@ class TelemetryService {
           _currentAlt = pos.altitude;
           _currentSpeed = pos.speed;
         } catch (_) {}
+
+        _sendLatestTelemetry();
       }
-
-      try {
-        _batteryLevel = await _battery.batteryLevel;
-        final state = await _battery.onBatteryStateChanged.first;
-        _isCharging = state == BatteryState.charging;
-      } catch (_) {}
-
-      _sendLatestTelemetry();
     });
   }
 
@@ -173,12 +196,15 @@ class TelemetryService {
     _positionSubscription?.cancel();
     _compassSubscription?.cancel();
     _connectivitySubscription?.cancel();
+    _heartbeatTimer?.cancel();
   }
 
   void _sendLatestTelemetry() {
     if (_currentLat == 0.0 || _currentLng == 0.0) {
       return; // Do not broadcast zero coordinates over network
     }
+
+    _lastTelemetrySentTime = DateTime.now();
 
     final tele = Telemetry(
       operatorId: myOperatorId,
