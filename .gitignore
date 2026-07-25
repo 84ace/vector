@@ -1,0 +1,36 @@
+# Local Environment Files & Secrets (DO NOT COMMIT)
+.env
+.env.local
+.env.development
+.env.production
+*.pem
+*.key
+*.secret
+
+# macOS
+.DS_Store
+
+# IDE & Editor files
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# Flutter / Dart
+client/.dart_tool/
+client/.flutter-plugins
+client/.flutter-plugins-dependencies
+client/.pub-cache/
+client/.pub/
+client/build/
+client/coverage/
+client/ios/Flutter/.last_build_id
+client/android/app/debug
+client/android/app/profile
+client/android/app/release
+
+# Go / Backend
+backend/node_bin
+backend/*.exe
+backend/*.out
