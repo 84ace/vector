@@ -7,10 +7,12 @@ import 'package:geolocator/geolocator.dart';
 import '../models/telemetry.dart';
 import '../models/c2_message.dart';
 import '../services/mesh_client.dart';
+import '../services/p2p_mesh_engine.dart';
 
 class TelemetryService {
   final String myOperatorId;
   final MeshClient meshClient;
+  final P2PMeshEngine? p2pMeshEngine;
 
   // Real Hardware Instances
   final Battery _battery = Battery();
@@ -52,17 +54,23 @@ class TelemetryService {
   TelemetryService({
     required this.myOperatorId,
     required this.meshClient,
+    this.p2pMeshEngine,
   }) {
-    // Listen to incoming network telemetry envelopes
-    meshClient.incomingMessages.listen((msg) {
+    void handleIncomingTelemetry(C2Message msg) {
       if (msg.type == MessageType.telemetry) {
         try {
-          final tele = Telemetry.fromJson(
-              Map<String, dynamic>.from(msg.toEnvelopeJson()));
-          _recordTeamTelemetry(tele);
+          final Map<String, dynamic> data = jsonDecode(msg.encryptedBody);
+          final tele = Telemetry.fromJson(data);
+          if (tele.operatorId.isNotEmpty && tele.latitude != 0.0) {
+            _recordTeamTelemetry(tele);
+          }
         } catch (_) {}
       }
-    });
+    }
+
+    // Listen to incoming network telemetry envelopes from relay and P2P mesh
+    meshClient.incomingMessages.listen(handleIncomingTelemetry);
+    p2pMeshEngine?.incomingP2PMessages.listen(handleIncomingTelemetry);
 
     // Initialize connectivity listener
     _connectivitySubscription = _connectivity.onConnectivityChanged.listen((results) {
@@ -179,7 +187,10 @@ class TelemetryService {
       isMe: true,
     );
 
-    final sent = meshClient.sendMessage(envelope);
+    final sentMesh = meshClient.sendMessage(envelope);
+    final sentP2P = p2pMeshEngine?.sendP2PDirectMessage(envelope) ?? false;
+    final sent = sentMesh || sentP2P;
+
     if (!sent) {
       _offlineBuffer.add(tele);
       if (_offlineBuffer.length > 200) _offlineBuffer.removeAt(0);
@@ -194,7 +205,9 @@ class TelemetryService {
           timestamp: buffered.timestamp,
           isMe: true,
         );
-        if (meshClient.sendMessage(offlineEnv)) {
+        final flushedMesh = meshClient.sendMessage(offlineEnv);
+        final flushedP2P = p2pMeshEngine?.sendP2PDirectMessage(offlineEnv) ?? false;
+        if (flushedMesh || flushedP2P) {
           _offlineBuffer.remove(buffered);
         }
       }

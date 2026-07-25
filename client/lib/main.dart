@@ -210,6 +210,7 @@ class _MainShellViewState extends State<MainShellView> {
     _telemetryService = TelemetryService(
       myOperatorId: _myProfile.id,
       meshClient: _meshClient,
+      p2pMeshEngine: _p2pMeshEngine,
     );
 
     PttAudioService.initializeGlobalListener(
