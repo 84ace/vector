@@ -68,11 +68,38 @@ class _TacticalMapViewState extends State<TacticalMapView> {
     }
   }
 
+  bool _hasInitialCentered = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.myTelemetry != null && widget.myTelemetry!.latitude != 0.0) {
+      _hasInitialCentered = true;
+    }
+  }
+
+  @override
+  void didUpdateWidget(TacticalMapView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_hasInitialCentered && widget.myTelemetry != null && widget.myTelemetry!.latitude != 0.0) {
+      _hasInitialCentered = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _mapController.move(
+          LatLng(widget.myTelemetry!.latitude, widget.myTelemetry!.longitude),
+          16.0,
+        );
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final myPos = (widget.myTelemetry != null && widget.myTelemetry!.latitude != 0.0)
+    final LatLng? myPos = (widget.myTelemetry != null && widget.myTelemetry!.latitude != 0.0)
         ? LatLng(widget.myTelemetry!.latitude, widget.myTelemetry!.longitude)
-        : const LatLng(-33.8688, 151.2093);
+        : null;
+
+    final initialCenter = myPos ?? const LatLng(0.0, 0.0);
+    final initialZoom = myPos != null ? 16.0 : 3.0;
 
     return Scaffold(
       body: Stack(
@@ -81,9 +108,9 @@ class _TacticalMapViewState extends State<TacticalMapView> {
           FlutterMap(
             mapController: _mapController,
             options: MapOptions(
-              initialCenter: myPos,
-              initialZoom: 15.0,
-              minZoom: 3.0,
+              initialCenter: initialCenter,
+              initialZoom: initialZoom,
+              minZoom: 2.0,
               maxZoom: 18.0,
               onLongPress: (tapPosition, point) {
                 _showAddWaypointDialog(point);
@@ -255,7 +282,17 @@ class _TacticalMapViewState extends State<TacticalMapView> {
               backgroundColor: const Color(0xFF0F172A),
               foregroundColor: Colors.cyanAccent,
               onPressed: () {
-                _mapController.move(myPos, 16.0);
+                if (myPos != null) {
+                  _mapController.move(myPos, 16.0);
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      backgroundColor: Colors.amberAccent,
+                      duration: Duration(seconds: 2),
+                      content: Text('ACQUIRING GPS FIX...', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                    ),
+                  );
+                }
               },
               child: const Icon(Icons.my_location),
             ),
@@ -313,31 +350,33 @@ class _TacticalMapViewState extends State<TacticalMapView> {
     }).toList();
   }
 
-  List<Marker> _buildProfileMarkers(LatLng myPos) {
+  List<Marker> _buildProfileMarkers(LatLng? myPos) {
     List<Marker> markers = [];
 
-    // 1. My Profile Marker
-    markers.add(
-      Marker(
-        width: 48,
-        height: 48,
-        point: myPos,
-        child: ProfileMarkerWidget(
-          profile: widget.myProfile,
-          telemetry: widget.myTelemetry,
-          isSelected: false,
-          onTap: () {},
+    // 1. My Profile Marker (ONLY if valid location acquired)
+    if (myPos != null) {
+      markers.add(
+        Marker(
+          width: 48,
+          height: 48,
+          point: myPos,
+          child: ProfileMarkerWidget(
+            profile: widget.myProfile,
+            telemetry: widget.myTelemetry,
+            isSelected: false,
+            onTap: () {},
+          ),
         ),
-      ),
-    );
+      );
+    }
 
-    // 2. Team Member Markers
+    // 2. Team Member Markers (ONLY if valid telemetry with latitude != 0.0)
     for (final peer in widget.teamProfiles) {
       if (peer.id == widget.myProfile.id) continue;
       final tele = widget.teamTelemetry[peer.id];
-      final pos = (tele != null && tele.latitude != 0.0)
-          ? LatLng(tele.latitude, tele.longitude)
-          : LatLng(myPos.latitude + 0.002, myPos.longitude + 0.002);
+      if (tele == null || tele.latitude == 0.0) continue; // Skip team members without active GPS fix
+
+      final pos = LatLng(tele.latitude, tele.longitude);
 
       markers.add(
         Marker(
@@ -349,21 +388,7 @@ class _TacticalMapViewState extends State<TacticalMapView> {
             telemetry: tele,
             isSelected: false,
             onTap: () {
-              _showOperatorContextSheet(peer, tele ?? Telemetry(
-                operatorId: peer.id,
-                latitude: pos.latitude,
-                longitude: pos.longitude,
-                altitude: 0.0,
-                speed: 0.0,
-                heading: 0.0,
-                accuracy: 5.0,
-                batteryLevel: 100,
-                isCharging: false,
-                cellularSignalBars: 4,
-                wifiSSID: 'Direct P2P',
-                networkType: NetworkType.wifi,
-                timestamp: DateTime.now(),
-              ));
+              _showOperatorContextSheet(peer, tele);
             },
           ),
         ),
@@ -521,12 +546,18 @@ class _TacticalMapViewState extends State<TacticalMapView> {
   }
 
   void _selectTargetForVectoring(OperatorProfile target, Telemetry targetTele) {
-    final double myLat = (widget.myTelemetry != null && widget.myTelemetry!.latitude != 0.0)
-        ? widget.myTelemetry!.latitude
-        : -33.8688;
-    final double myLng = (widget.myTelemetry != null && widget.myTelemetry!.longitude != 0.0)
-        ? widget.myTelemetry!.longitude
-        : 151.2093;
+    if (widget.myTelemetry == null || widget.myTelemetry!.latitude == 0.0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          backgroundColor: Colors.redAccent,
+          content: Text('GPS FIX REQUIRED FOR VECTORING CALCULATIONS', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+        ),
+      );
+      return;
+    }
+
+    final double myLat = widget.myTelemetry!.latitude;
+    final double myLng = widget.myTelemetry!.longitude;
     final double myAlt = widget.myTelemetry?.altitude ?? 0.0;
     final double mySpeed = widget.myTelemetry?.speed ?? 0.0;
     final double myHeading = widget.myTelemetry?.heading ?? 0.0;

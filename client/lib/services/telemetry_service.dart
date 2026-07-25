@@ -91,6 +91,23 @@ class TelemetryService {
 
     if (permission == LocationPermission.always ||
         permission == LocationPermission.whileInUse) {
+      try {
+        Position? initialPos = await Geolocator.getLastKnownPosition();
+        initialPos ??= await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.medium,
+            timeLimit: Duration(seconds: 3),
+          ),
+        );
+        if (initialPos != null) {
+          _currentLat = initialPos.latitude;
+          _currentLng = initialPos.longitude;
+          _currentAlt = initialPos.altitude;
+          _currentSpeed = initialPos.speed;
+          _sendLatestTelemetry();
+        }
+      } catch (_) {}
+
       // Subscribe to real GPS Stream
       _positionSubscription = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
