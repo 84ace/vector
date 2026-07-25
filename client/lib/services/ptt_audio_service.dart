@@ -307,4 +307,10 @@ class PttAudioService {
     playPcmWavAudio(frequency: 880.0, amplitude: 0.6, durationMs: 100);
     HapticFeedback.lightImpact();
   }
+
+  /// Plays tactical message arrival sound effect (two-tone chime) across mobile and desktop devices
+  static void playMessageArrivalSound() {
+    playPcmWavAudio(frequency: 960.0, amplitude: 0.9, durationMs: 140, isSquelchChirp: true);
+    HapticFeedback.mediumImpact();
+  }
 }

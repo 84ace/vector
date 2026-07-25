@@ -336,19 +336,23 @@ class _MainShellViewState extends State<MainShellView> {
 
         _addEventLog('E2EE TEXT RECEIVED', 'Message from ${senderPeer.callsign}: "$decrypted"', EventSeverity.info);
 
-        _showInAppNotification(
-          title: 'SECURE E2EE MESSAGE FROM ${senderPeer.callsign}',
-          message: decrypted,
-          color: Colors.cyanAccent,
-          onTap: () {
-            _sendReadReceipt(msg.id, msg.senderId);
-            setState(() {
-              _activeChatPeer = senderPeer;
-              _activeChatSubTab = 0;
-              _currentIndex = 1;
-            });
-          },
-        );
+        _triggerAudibleAndHapticAlert();
+
+        if (_currentIndex != 1) {
+          _showInAppNotification(
+            title: 'SECURE E2EE MESSAGE FROM ${senderPeer.callsign}',
+            message: decrypted,
+            color: Colors.cyanAccent,
+            onTap: () {
+              _sendReadReceipt(msg.id, msg.senderId);
+              setState(() {
+                _activeChatPeer = senderPeer;
+                _activeChatSubTab = 0;
+                _currentIndex = 1;
+              });
+            },
+          );
+        }
       } else if (msg.type == MessageType.chatGroup && msg.senderId != _myProfile.id) {
         final decrypted = _mlsGroupEngine.decryptGroupMessage(msg.encryptedBody);
         final decryptedMsg = msg.copyWith(
@@ -376,17 +380,20 @@ class _MainShellViewState extends State<MainShellView> {
         _addEventLog('GROUP MLS TEXT RECEIVED', 'Group message from ${senderPeer.callsign}: "$decrypted"', EventSeverity.info);
 
         _triggerAudibleAndHapticAlert();
-        _showInAppNotification(
-          title: 'SQUAD GROUP MESSAGE FROM ${senderPeer.callsign}',
-          message: decrypted,
-          color: Colors.cyanAccent,
-          onTap: () {
-            setState(() {
-              _activeChatSubTab = 1;
-              _currentIndex = 1;
-            });
-          },
-        );
+
+        if (_currentIndex != 1) {
+          _showInAppNotification(
+            title: 'SQUAD GROUP MESSAGE FROM ${senderPeer.callsign}',
+            message: decrypted,
+            color: Colors.cyanAccent,
+            onTap: () {
+              setState(() {
+                _activeChatSubTab = 1;
+                _currentIndex = 1;
+              });
+            },
+          );
+        }
       } else if (msg.type == MessageType.broadcast) {
         if (msg.encryptedBody.contains('DELIVERY_ACK')) {
           try {
@@ -494,17 +501,20 @@ class _MainShellViewState extends State<MainShellView> {
           _addEventLog('OPERATIONAL BROADCAST RECEIVED', 'Broadcast from ${senderPeer.callsign}: "$decrypted"', EventSeverity.info);
 
           _triggerAudibleAndHapticAlert();
-          _showInAppNotification(
-            title: 'OPERATIONAL BROADCAST FROM ${senderPeer.callsign}',
-            message: decrypted,
-            color: Colors.amberAccent,
-            onTap: () {
-              setState(() {
-                _activeChatSubTab = 2;
-                _currentIndex = 1;
-              });
-            },
-          );
+
+          if (_currentIndex != 1) {
+            _showInAppNotification(
+              title: 'OPERATIONAL BROADCAST FROM ${senderPeer.callsign}',
+              message: decrypted,
+              color: Colors.amberAccent,
+              onTap: () {
+                setState(() {
+                  _activeChatSubTab = 2;
+                  _currentIndex = 1;
+                });
+              },
+            );
+          }
         }
       }
     }
@@ -844,6 +854,7 @@ class _MainShellViewState extends State<MainShellView> {
   }
 
   void _triggerAudibleAndHapticAlert() {
+    PttAudioService.playMessageArrivalSound();
     SystemSound.play(SystemSoundType.alert);
     SystemSound.play(SystemSoundType.click);
     HapticFeedback.heavyImpact();
