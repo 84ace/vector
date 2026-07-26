@@ -77,14 +77,42 @@ class PttAudioService {
     clipNotifier.value = globalVoiceClips.length;
   }
 
+  /// Configures global audio output device (Loudspeaker/Hands-Free vs Internal Earpiece Speaker)
+  static Future<void> configureAudioOutput({required bool useLoudspeaker}) async {
+    try {
+      await AudioPlayer.global.setAudioContext(AudioContext(
+        android: AudioContextAndroid(
+          stayAwake: true,
+          contentType: AndroidContentType.speech,
+          usageType: AndroidUsageType.voiceCommunication,
+          audioFocus: AndroidAudioFocus.gain,
+          audioMode: useLoudspeaker ? AndroidAudioMode.normal : AndroidAudioMode.inCall,
+        ),
+        iOS: AudioContextIOS(
+          category: AVAudioSessionCategory.playAndRecord,
+          options: useLoudspeaker
+              ? {AVAudioSessionOptions.defaultToSpeaker, AVAudioSessionOptions.allowBluetooth}
+              : {AVAudioSessionOptions.allowBluetooth},
+        ),
+      ));
+      debugPrint('[PTT AUDIO SERVICE] Output configured: ${useLoudspeaker ? "LOUDSPEAKER (HANDS-FREE)" : "INTERNAL EARPIECE"}');
+    } catch (e) {
+      debugPrint('[PTT AUDIO OUTPUT CONFIG ERROR] $e');
+    }
+  }
+
   /// Initializes app-level global PTT listener to capture incoming audio clips on any screen
   static void initializeGlobalListener({
     required MeshClient meshClient,
     required P2PMeshEngine p2pMeshEngine,
     required String myOperatorId,
-  }) {
+  }) async {
     _meshSub?.cancel();
     _p2pSub?.cancel();
+
+    final prefs = await SharedPreferences.getInstance();
+    final useLoudspeaker = prefs.getBool('ptt_use_loudspeaker') ?? true;
+    configureAudioOutput(useLoudspeaker: useLoudspeaker);
 
     void handleGlobalMessage(C2Message msg) async {
       if (msg.senderId == myOperatorId) return;

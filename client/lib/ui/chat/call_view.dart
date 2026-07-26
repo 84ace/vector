@@ -65,6 +65,7 @@ class _CallViewState extends State<CallView> {
   OperatorProfile? _selectedPeer;
   bool _isPttPressed = false;
   bool _autoPlayPtt = false;
+  bool _useLoudspeaker = true;
   PttCodecProfile _codecProfile = PttCodecProfile.narrowband;
   String? _incomingPttSpeakerCallsign;
   double _currentAmplitude = 0.0;
@@ -223,9 +224,11 @@ class _CallViewState extends State<CallView> {
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
-    final codecName = prefs.getString('ptt_codec_profile') ?? 'standard';
+    final codecName = prefs.getString('ptt_codec_profile') ?? 'narrowband';
+    final loudspeaker = prefs.getBool('ptt_use_loudspeaker') ?? true;
     setState(() {
       _autoPlayPtt = prefs.getBool('auto_play_ptt') ?? false;
+      _useLoudspeaker = loudspeaker;
       if (codecName == 'narrowband') {
         _codecProfile = PttCodecProfile.narrowband;
       } else if (codecName == 'wideband') {
@@ -234,6 +237,7 @@ class _CallViewState extends State<CallView> {
         _codecProfile = PttCodecProfile.standard;
       }
     });
+    PttAudioService.configureAudioOutput(useLoudspeaker: loudspeaker);
   }
 
   Future<void> _saveAutoPlaySetting(bool val) async {
@@ -243,6 +247,16 @@ class _CallViewState extends State<CallView> {
     setState(() {
       _autoPlayPtt = val;
     });
+  }
+
+  Future<void> _saveAudioOutputSetting(bool val) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('ptt_use_loudspeaker', val);
+    if (!mounted) return;
+    setState(() {
+      _useLoudspeaker = val;
+    });
+    await PttAudioService.configureAudioOutput(useLoudspeaker: val);
   }
 
   Future<void> _saveCodecProfile(PttCodecProfile profile) async {
@@ -1760,6 +1774,40 @@ class _CallViewState extends State<CallView> {
                         labelStyle: TextStyle(color: !_autoPlayPtt ? Colors.black : Colors.white70),
                         onSelected: (val) {
                           _saveAutoPlaySetting(false);
+                          setModalState(() {});
+                          setState(() {});
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Audio Output Device
+                  const Text('AUDIO OUTPUT DEVICE', style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      ChoiceChip(
+                        avatar: Icon(Icons.volume_up, size: 12, color: _useLoudspeaker ? Colors.black : Colors.white70),
+                        label: const Text('LOUDSPEAKER (DEFAULT)', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                        selected: _useLoudspeaker,
+                        selectedColor: C2Colors.emeraldAccent,
+                        labelStyle: TextStyle(color: _useLoudspeaker ? Colors.black : Colors.white70),
+                        onSelected: (val) {
+                          _saveAudioOutputSetting(true);
+                          setModalState(() {});
+                          setState(() {});
+                        },
+                      ),
+                      const SizedBox(width: 8),
+                      ChoiceChip(
+                        avatar: Icon(Icons.phone_in_talk, size: 12, color: !_useLoudspeaker ? Colors.black : Colors.white70),
+                        label: const Text('INTERNAL EARPIECE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                        selected: !_useLoudspeaker,
+                        selectedColor: Colors.amberAccent,
+                        labelStyle: TextStyle(color: !_useLoudspeaker ? Colors.black : Colors.white70),
+                        onSelected: (val) {
+                          _saveAudioOutputSetting(false);
                           setModalState(() {});
                           setState(() {});
                         },
