@@ -211,6 +211,7 @@ class _MainShellViewState extends State<MainShellView> {
       myOperatorId: _myProfile.id,
       meshClient: _meshClient,
       p2pMeshEngine: _p2pMeshEngine,
+      mlsGroupEngine: _mlsGroupEngine,
     );
 
     PttAudioService.initializeGlobalListener(
@@ -233,13 +234,22 @@ class _MainShellViewState extends State<MainShellView> {
       if (!mounted) return;
 
       if (msg.type == MessageType.sosAlert) {
+        final decrypted = _mlsGroupEngine.decryptGroupMessage(msg.encryptedBody);
+        if (decrypted.startsWith('[GROUP DECRYPTION ERROR')) {
+          debugPrint('[SECURITY ALERT] Rejected SOS beacon from unpaired device!');
+          return;
+        }
+        final senderCallsign = msg.senderId.startsWith('op-')
+            ? _teamProfiles.firstWhere((p) => p.id == msg.senderId, orElse: () => _myProfile).callsign
+            : msg.senderId;
+
         setState(() {
-          _activeSosOperatorCallsign = msg.senderId;
+          _activeSosOperatorCallsign = senderCallsign;
         });
-        _addEventLog('EMERGENCY SOS', 'Distress beacon received from ${msg.senderId}', EventSeverity.alert);
+        _addEventLog('EMERGENCY SOS', 'Distress beacon received from $senderCallsign', EventSeverity.alert);
         _showInAppNotification(
           title: 'ALERT: EMERGENCY SOS',
-          message: 'Distress signal received from ${msg.senderId}',
+          message: 'Distress signal received from $senderCallsign',
           color: Colors.red,
         );
       } else if (msg.type == MessageType.callSignaling) {
@@ -1188,12 +1198,14 @@ class _MainShellViewState extends State<MainShellView> {
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
             onPressed: () {
               Navigator.pop(ctx);
+              final rawSos = 'EMERGENCY_SOS_SIGNAL_${_myProfile.callsign}';
+              final encryptedBody = _mlsGroupEngine.encryptGroupMessage(rawSos);
               final sosMsg = C2Message(
                 id: 'sos-${DateTime.now().millisecondsSinceEpoch}',
                 type: MessageType.sosAlert,
                 senderId: _myProfile.id,
                 senderPublicKey: _myProfile.publicKey,
-                encryptedBody: 'EMERGENCY_SOS_SIGNAL',
+                encryptedBody: encryptedBody,
                 timestamp: DateTime.now(),
                 isMe: true,
               );

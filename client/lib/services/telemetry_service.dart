@@ -9,11 +9,13 @@ import '../models/telemetry.dart';
 import '../models/c2_message.dart';
 import '../services/mesh_client.dart';
 import '../services/p2p_mesh_engine.dart';
+import '../crypto/mls_group_engine.dart';
 
 class TelemetryService {
   final String myOperatorId;
   final MeshClient meshClient;
   final P2PMeshEngine? p2pMeshEngine;
+  final MLSGroupEngine? mlsGroupEngine;
 
   // Real Hardware Instances
   final Battery _battery = Battery();
@@ -56,11 +58,21 @@ class TelemetryService {
     required this.myOperatorId,
     required this.meshClient,
     this.p2pMeshEngine,
+    this.mlsGroupEngine,
   }) {
     void handleIncomingTelemetry(C2Message msg) {
       if (msg.type == MessageType.telemetry) {
         try {
-          final Map<String, dynamic> data = jsonDecode(msg.encryptedBody);
+          String rawJson = msg.encryptedBody;
+          if (mlsGroupEngine != null) {
+            final decrypted = mlsGroupEngine!.decryptGroupMessage(msg.encryptedBody);
+            if (decrypted.startsWith('[GROUP DECRYPTION ERROR')) {
+              debugPrint('[TELEMETRY_SERVICE SECURITY] Decryption failed for incoming telemetry from ${msg.senderId}. Unpaired node rejected.');
+              return;
+            }
+            rawJson = decrypted;
+          }
+          final Map<String, dynamic> data = jsonDecode(rawJson);
           final parsed = Telemetry.fromJson(data);
           final effectiveOpId = parsed.operatorId.isNotEmpty ? parsed.operatorId : msg.senderId;
 
@@ -244,12 +256,17 @@ class TelemetryService {
     _myTelemetryController.add(tele);
     _recordTeamTelemetry(tele);
 
+    final rawJson = jsonEncode(tele.toJson());
+    final encryptedBody = mlsGroupEngine != null
+        ? mlsGroupEngine!.encryptGroupMessage(rawJson)
+        : rawJson;
+
     // Create telemetry broadcast envelope
     final envelope = C2Message(
       id: 'tele-${DateTime.now().millisecondsSinceEpoch}',
       type: MessageType.telemetry,
       senderId: myOperatorId,
-      encryptedBody: jsonEncode(tele.toJson()),
+      encryptedBody: encryptedBody,
       timestamp: DateTime.now(),
       isMe: true,
     );
