@@ -419,12 +419,18 @@ class _MainShellViewState extends State<MainShellView> {
             _updateMessageStatus(msgId, MessageStatus.read);
           } catch (_) {}
         } else if (msg.encryptedBody.contains('UNPAIR_AND_PURGE')) {
+          if (msg.recipientId != null && msg.recipientId!.isNotEmpty && msg.recipientId != _myProfile.id) {
+            return; // Ignore unpair signals intended for other devices
+          }
           try {
             final Map<String, dynamic> data = jsonDecode(msg.encryptedBody);
             final purgedOpId = data['operator_id'] ?? msg.senderId;
             final purgedCallsign = data['callsign'] ?? msg.senderId;
 
-            _handleIncomingRemoteUnpair(purgedOpId, purgedCallsign);
+            final isPairedWithMe = _teamProfiles.any((p) => p.id == purgedOpId || p.callsign == purgedCallsign);
+            if (isPairedWithMe) {
+              _handleIncomingRemoteUnpair(purgedOpId, purgedCallsign);
+            }
           } catch (_) {}
         } else if (msg.encryptedBody.contains('PAIR_ACK')) {
           try {
@@ -654,7 +660,7 @@ class _MainShellViewState extends State<MainShellView> {
     };
     final unpairMsg = C2Message(
       id: 'unpair-${DateTime.now().millisecondsSinceEpoch}',
-      type: MessageType.broadcast,
+      type: MessageType.chat1to1,
       senderId: _myProfile.id,
       senderPublicKey: _myProfile.publicKey,
       recipientId: targetOpId,
