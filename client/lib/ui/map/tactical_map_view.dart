@@ -370,35 +370,23 @@ class _TacticalMapViewState extends State<TacticalMapView> {
       );
     }
 
-    // 2. Team Member Markers from all active team telemetry updates
-    final Map<String, OperatorProfile> knownProfiles = {};
-    for (final p in widget.teamProfiles) {
-      knownProfiles[p.id] = p;
-    }
+    // 2. Paired Squad Member Markers ONLY (Zero-Trust Privacy)
+    for (final peer in widget.teamProfiles) {
+      if (peer.id == widget.myProfile.id) continue;
 
-    widget.teamTelemetry.forEach((opId, tele) {
-      if (opId == widget.myProfile.id) return;
-      if (tele.latitude == 0.0 || tele.longitude == 0.0) return;
-
-      final profile = knownProfiles[opId] ??
-          widget.teamProfiles.firstWhere(
-            (p) => p.id == opId || p.callsign.toUpperCase() == opId.toUpperCase(),
-            orElse: () {
-              final cleanCallsign = opId.startsWith('op-')
-                  ? opId.replaceFirst('op-', '').split('-').first.toUpperCase()
-                  : opId.toUpperCase();
-              return OperatorProfile(
-                id: opId,
-                callsign: cleanCallsign.isNotEmpty ? cleanCallsign : 'OPERATOR',
-                name: 'Squad Member',
-                role: OperatorRole.operator,
-                avatarBase64: '',
-                publicKey: '',
-                lastSeen: tele.timestamp,
-                isOnline: !tele.isOffline,
+      // Find telemetry for paired squad member by operator ID or callsign
+      final tele = widget.teamTelemetry[peer.id] ??
+          widget.teamTelemetry[peer.callsign] ??
+          widget.teamTelemetry.values.cast<Telemetry?>().firstWhere(
+                (t) => t != null &&
+                    (t.operatorId.toUpperCase() == peer.id.toUpperCase() ||
+                     t.operatorId.toUpperCase() == peer.callsign.toUpperCase()),
+                orElse: () => null,
               );
-            },
-          );
+
+      if (tele == null || tele.latitude == 0.0 || tele.longitude == 0.0) {
+        continue; // Skip if no active GPS telemetry received for this paired squad member
+      }
 
       markers.add(
         Marker(
@@ -406,16 +394,16 @@ class _TacticalMapViewState extends State<TacticalMapView> {
           height: 48,
           point: LatLng(tele.latitude, tele.longitude),
           child: ProfileMarkerWidget(
-            profile: profile,
+            profile: peer,
             telemetry: tele,
             isSelected: false,
             onTap: () {
-              _showOperatorContextSheet(profile, tele);
+              _showOperatorContextSheet(peer, tele);
             },
           ),
         ),
       );
-    });
+    }
 
     return markers;
   }
