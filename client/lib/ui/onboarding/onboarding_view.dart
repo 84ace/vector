@@ -21,7 +21,6 @@ class OnboardingView extends StatefulWidget {
 class _OnboardingViewState extends State<OnboardingView> {
   final _formKey = GlobalKey<FormState>();
   final _callsignController = TextEditingController();
-  final _nameController = TextEditingController();
   OperatorRole _selectedRole = OperatorRole.operator;
 
   bool _locationGranted = false;
@@ -111,7 +110,7 @@ class _OnboardingViewState extends State<OnboardingView> {
     final profile = OperatorProfile(
       id: 'op-${_callsignController.text.toLowerCase()}-${DateTime.now().millisecondsSinceEpoch % 1000}',
       callsign: _callsignController.text.toUpperCase(),
-      name: _nameController.text,
+      name: _callsignController.text.toUpperCase(),
       role: _selectedRole,
       avatarBase64: '',
       publicKey: 'pubkey_${_callsignController.text.toLowerCase()}_${DateTime.now().millisecondsSinceEpoch}',
@@ -153,7 +152,7 @@ class _OnboardingViewState extends State<OnboardingView> {
                   textAlign: TextAlign.center,
                 ),
                 const Text(
-                  'Zero-Trust Tactical Command & Control',
+                  'Tactical Command & Control Platform',
                   style: TextStyle(
                     color: Colors.cyanAccent,
                     fontSize: 12,
@@ -186,37 +185,18 @@ class _OnboardingViewState extends State<OnboardingView> {
                 ),
                 const SizedBox(height: 16),
 
-                TextFormField(
-                  controller: _nameController,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    labelText: 'Full Name',
-                    labelStyle: TextStyle(color: Colors.white70),
-                    enabledBorder: OutlineInputBorder(
-                      borderSide: BorderSide(color: Colors.white24),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderSide: BorderSide(color: Colors.cyanAccent),
-                    ),
-                  ),
-                  validator: (value) {
-                    if (value == null || value.trim().isEmpty) {
-                      return 'Please enter your full name';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 16),
-
                 // Role Dropdown
                 DropdownButtonFormField<OperatorRole>(
-                  initialValue: _selectedRole,
+                  value: _selectedRole,
                   dropdownColor: C2Colors.slateCard,
                   decoration: const InputDecoration(
                     labelText: 'Operational Role',
                     labelStyle: TextStyle(color: Colors.white70),
                     enabledBorder: OutlineInputBorder(
                       borderSide: BorderSide(color: Colors.white24),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.cyanAccent),
                     ),
                   ),
                   items: OperatorRole.values.map((role) {
@@ -228,22 +208,22 @@ class _OnboardingViewState extends State<OnboardingView> {
                       ),
                     );
                   }).toList(),
-                  onChanged: (val) {
-                    if (val != null) {
+                  onChanged: (role) {
+                    if (role != null) {
                       setState(() {
-                        _selectedRole = val;
+                        _selectedRole = role;
                       });
                     }
                   },
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 32),
 
-                // Permissions Section
+                // System Permissions Matrix Section
                 const Text(
-                  'REQUIRED HARDWARE PERMISSIONS',
+                  'HARDWARE PERMISSIONS',
                   style: TextStyle(
                     color: Colors.cyanAccent,
-                    fontSize: 11,
+                    fontSize: 12,
                     fontWeight: FontWeight.bold,
                     letterSpacing: 1.0,
                   ),
@@ -260,7 +240,7 @@ class _OnboardingViewState extends State<OnboardingView> {
                   label: 'Microphone & Audio Systems',
                   description: Platform.isMacOS
                       ? 'Will be requested JIT during active calls'
-                      : 'Required for E2EE Push-To-Talk voice comms',
+                      : 'Required for Push-To-Talk voice comms',
                   isGranted: _micGranted,
                   onReq: _requestMicrophone,
                 ),

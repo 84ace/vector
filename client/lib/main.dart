@@ -345,13 +345,13 @@ class _MainShellViewState extends State<MainShellView> {
           ),
         );
 
-        _addEventLog('E2EE TEXT RECEIVED', 'Message from ${senderPeer.callsign}: "$decrypted"', EventSeverity.info);
+        _addEventLog('MESSAGE RECEIVED', 'Message from ${senderPeer.callsign}: "$decrypted"', EventSeverity.info);
 
         _triggerAudibleAndHapticAlert();
 
         if (_currentIndex != 1) {
           _showInAppNotification(
-            title: 'SECURE E2EE MESSAGE FROM ${senderPeer.callsign}',
+            title: 'MESSAGE FROM ${senderPeer.callsign}',
             message: decrypted,
             color: Colors.cyanAccent,
             onTap: () {
@@ -388,13 +388,13 @@ class _MainShellViewState extends State<MainShellView> {
           ),
         );
 
-        _addEventLog('GROUP MLS TEXT RECEIVED', 'Group message from ${senderPeer.callsign}: "$decrypted"', EventSeverity.info);
+        _addEventLog('GROUP MESSAGE RECEIVED', 'Group message from ${senderPeer.callsign}: "$decrypted"', EventSeverity.info);
 
         _triggerAudibleAndHapticAlert();
 
         if (_currentIndex != 1) {
           _showInAppNotification(
-            title: 'SQUAD GROUP MESSAGE FROM ${senderPeer.callsign}',
+            title: 'GROUP MESSAGE FROM ${senderPeer.callsign}',
             message: decrypted,
             color: Colors.cyanAccent,
             onTap: () {
@@ -778,7 +778,7 @@ class _MainShellViewState extends State<MainShellView> {
                 border: Border.all(color: Colors.amberAccent.withOpacity(0.4)),
               ),
               child: const Text(
-                '⚠️ WARNING: This pairing token was previously consumed. Reusing pairing codes can expose your E2EE identity keys to unauthorized devices on the mesh network. Do you trust this operator and wish to accept pairing anyway?',
+                '⚠️ WARNING: This pairing token was previously consumed. Reusing pairing codes can expose security keys to unauthorized devices on the mesh network. Do you trust this operator and wish to accept pairing anyway?',
                 style: TextStyle(color: Colors.amberAccent, fontSize: 11),
               ),
             ),
@@ -944,12 +944,12 @@ class _MainShellViewState extends State<MainShellView> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Operator Name: ${applicant.name}', style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+            Text('Callsign: ${applicant.callsign}', style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
             const SizedBox(height: 4),
             Text('Operator ID: ${applicant.id}', style: const TextStyle(color: Colors.white70, fontSize: 11)),
             const SizedBox(height: 12),
             const Text(
-              'Do you approve adding this operator to your E2EE secure squad directory and exchanging situational map telemetry?',
+              'Do you approve adding this operator to your squad directory and exchanging situational map telemetry?',
               style: TextStyle(color: Colors.white54, fontSize: 11),
             ),
           ],

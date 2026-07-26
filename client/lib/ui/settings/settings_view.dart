@@ -32,7 +32,6 @@ class SettingsView extends StatefulWidget {
 class _SettingsViewState extends State<SettingsView> with SingleTickerProviderStateMixin {
   late TabController _tabController;
   late TextEditingController _callsignController;
-  late TextEditingController _nameController;
   late String _avatarBase64;
   bool _isStealthMode = false;
 
@@ -41,7 +40,6 @@ class _SettingsViewState extends State<SettingsView> with SingleTickerProviderSt
     super.initState();
     _tabController = TabController(length: 4, vsync: this);
     _callsignController = TextEditingController(text: widget.myProfile.callsign);
-    _nameController = TextEditingController(text: widget.myProfile.name);
     _avatarBase64 = widget.myProfile.avatarBase64;
   }
 
@@ -49,16 +47,15 @@ class _SettingsViewState extends State<SettingsView> with SingleTickerProviderSt
   void dispose() {
     _tabController.dispose();
     _callsignController.dispose();
-    _nameController.dispose();
     super.dispose();
   }
 
   void _saveProfile() {
-    if (_callsignController.text.isEmpty || _nameController.text.isEmpty) return;
+    if (_callsignController.text.isEmpty) return;
 
     final updated = widget.myProfile.copyWith(
       callsign: _callsignController.text.toUpperCase(),
-      name: _nameController.text,
+      name: _callsignController.text.toUpperCase(),
       avatarBase64: _avatarBase64,
     );
 
@@ -331,20 +328,6 @@ class _SettingsViewState extends State<SettingsView> with SingleTickerProviderSt
         ),
         const SizedBox(height: 12),
 
-        TextField(
-          controller: _nameController,
-          style: const TextStyle(color: Colors.white, fontSize: 13),
-          decoration: const InputDecoration(
-            labelText: 'Full Name',
-            labelStyle: TextStyle(color: Colors.white70),
-            filled: true,
-            fillColor: C2Colors.slateCard,
-            border: OutlineInputBorder(),
-            isDense: true,
-          ),
-        ),
-        const SizedBox(height: 12),
-
         ElevatedButton.icon(
           style: ElevatedButton.styleFrom(backgroundColor: Colors.cyan, foregroundColor: Colors.black),
           icon: const Icon(Icons.save, size: 16),
@@ -354,7 +337,7 @@ class _SettingsViewState extends State<SettingsView> with SingleTickerProviderSt
 
         const Divider(color: Colors.white12, height: 32),
 
-        const Text('E2EE IDENTITY KEYS & FINGERPRINT', style: TextStyle(color: Colors.cyanAccent, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
+        const Text('SECURITY FINGERPRINT', style: TextStyle(color: Colors.cyanAccent, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
         const SizedBox(height: 8),
 
         Container(

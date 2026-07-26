@@ -152,8 +152,8 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
           unselectedLabelColor: Colors.white54,
           labelStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
           tabs: const [
-            Tab(text: '1:1 SIGNAL (E2EE)'),
-            Tab(text: 'GROUP MLS (TreeKEM)'),
+            Tab(text: 'DIRECT CHAT'),
+            Tab(text: 'SQUAD CHAT'),
             Tab(text: 'BROADCAST'),
           ],
         ),
@@ -199,7 +199,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
 
     return Column(
       children: [
-        // E2EE Double Ratchet badge
+        // Security Status Badge
         Container(
           width: double.infinity,
           padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 16),
@@ -210,7 +210,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
               const Icon(Icons.verified, color: C2Colors.emeraldAccent, size: 12),
               const SizedBox(width: 6),
               Text(
-                'Signal Double Ratchet E2EE active with ${_selectedPeer?.callsign ?? "Target"}',
+                'Encrypted chat with ${_selectedPeer?.callsign ?? "Target"}',
                 style: const TextStyle(color: C2Colors.emeraldAccent, fontSize: 10, fontWeight: FontWeight.bold),
               ),
             ],
@@ -279,7 +279,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
               const Icon(Icons.groups, color: Colors.cyanAccent, size: 18),
               const SizedBox(width: 8),
               Text(
-                'GROUP: ${widget.mlsGroupEngine.groupName.toUpperCase()} (${widget.mlsGroupEngine.memberPublicKeys.length} MEMBERS)',
+                'SQUAD: ${widget.mlsGroupEngine.groupName.toUpperCase()} (${widget.mlsGroupEngine.memberPublicKeys.length} MEMBERS)',
                 style: const TextStyle(color: Colors.cyanAccent, fontSize: 11, fontWeight: FontWeight.bold),
               ),
             ],
@@ -340,7 +340,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
     if (filtered.isEmpty) {
       return const Center(
         child: Text(
-          'No message history yet. All comms are E2EE encrypted.',
+          'No message history yet.',
           style: TextStyle(color: Colors.white38, fontSize: 12),
         ),
       );
@@ -443,7 +443,7 @@ class _ChatViewState extends State<ChatView> with SingleTickerProviderStateMixin
               controller: _inputController,
               style: const TextStyle(color: Colors.white, fontSize: 13),
               decoration: const InputDecoration(
-                hintText: 'Transmit E2EE payload...',
+                hintText: 'Type a message...',
                 hintStyle: TextStyle(color: Colors.white38),
                 border: InputBorder.none,
               ),

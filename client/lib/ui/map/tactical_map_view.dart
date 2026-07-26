@@ -450,7 +450,7 @@ class _TacticalMapViewState extends State<TacticalMapView> {
               ),
               ListTile(
                 leading: const Icon(Icons.phone, color: C2Colors.emeraldAccent),
-                title: const Text('INITIATE E2EE VOICE CALL', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                title: const Text('VOICE CALL', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
                 onTap: () {
                   Navigator.pop(ctx);
                   widget.onStartVoiceCall?.call(target);
@@ -458,7 +458,7 @@ class _TacticalMapViewState extends State<TacticalMapView> {
               ),
               ListTile(
                 leading: const Icon(Icons.videocam, color: Colors.purpleAccent),
-                title: const Text('INITIATE E2EE VIDEO CALL', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                title: const Text('VIDEO CALL', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
                 onTap: () {
                   Navigator.pop(ctx);
                   widget.onStartVideoCall?.call(target);
@@ -466,7 +466,7 @@ class _TacticalMapViewState extends State<TacticalMapView> {
               ),
               ListTile(
                 leading: const Icon(Icons.chat, color: Colors.amberAccent),
-                title: const Text('OPEN SECURE E2EE CHAT', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                title: const Text('OPEN CHAT', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
                 onTap: () {
                   Navigator.pop(ctx);
                   widget.onOpenChat?.call(target);
