@@ -146,6 +146,7 @@ class _CallViewState extends State<CallView> {
           }
         } catch (_) {}
       } else if (body.contains('CALL_ACCEPT')) {
+        PttAudioService.stopCallTones();
         final sender = widget.teamProfiles.firstWhere(
           (p) => p.id == msg.senderId || p.callsign == msg.senderId,
           orElse: () => _selectedPeer ?? widget.teamProfiles.first,
@@ -158,7 +159,6 @@ class _CallViewState extends State<CallView> {
         });
         _startCallDurationTimer();
         _startCallAudioStream();
-        PttAudioService.playRadioClick();
       } else if (body.contains('CALL_INITIATE_VOICE')) {
         final sender = widget.teamProfiles.firstWhere(
           (p) => p.id == msg.senderId || p.callsign == msg.senderId,
@@ -809,19 +809,21 @@ class _CallViewState extends State<CallView> {
     if (_selectedPeer == null) return;
     setState(() {
       _isInActiveCall = true;
+      _isCallConnected = false;
       _isVideoCall = isVideo;
       _callDurationSecs = 0;
     });
 
+    PttAudioService.startRingbackTone();
     _startCallDurationTimer();
     _startCallAudioStream();
 
     final action = isVideo ? 'CALL_INITIATE_VIDEO' : 'CALL_INITIATE_VOICE';
     _sendCallSignal(action);
-    PttAudioService.playRadioClick();
   }
 
   void _endCall({bool transmit = true}) async {
+    PttAudioService.stopCallTones();
     if (transmit) {
       _sendCallSignal('CALL_END');
     }
@@ -838,6 +840,7 @@ class _CallViewState extends State<CallView> {
 
     setState(() {
       _isInActiveCall = false;
+      _isCallConnected = false;
       _isVideoCall = false;
       _callDurationSecs = 0;
       _resetWaveform();

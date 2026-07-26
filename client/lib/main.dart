@@ -294,12 +294,21 @@ class _MainShellViewState extends State<MainShellView> {
         );
       } else if (msg.type == MessageType.callSignaling) {
         if (msg.encryptedBody.contains('CALL_END')) {
+          PttAudioService.stopCallTones();
           _addEventLog('CALL ENDED', 'Voice/Video call ended by peer', EventSeverity.info);
           setState(() {
             _isCallActive = false;
             _activeCallPeer = null;
           });
+        } else if (msg.encryptedBody.contains('CALL_DECLINE')) {
+          PttAudioService.stopCallTones();
+          _addEventLog('CALL DECLINED', 'Peer declined voice/video call', EventSeverity.info);
+          setState(() {
+            _isCallActive = false;
+            _activeCallPeer = null;
+          });
         } else if (msg.encryptedBody.contains('CALL_ACCEPT')) {
+          PttAudioService.stopCallTones();
           _addEventLog('CALL ACCEPTED', 'Peer accepted voice/video call', EventSeverity.info);
           setState(() {
             _isCallActive = true;
@@ -307,6 +316,7 @@ class _MainShellViewState extends State<MainShellView> {
           });
         } else if (msg.encryptedBody.contains('CALL_INITIATE_VOICE') || msg.encryptedBody.contains('CALL_INITIATE_VIDEO')) {
           if (msg.recipientId == _myProfile.id) {
+            PttAudioService.startRingtone();
             final peer = _teamProfiles.firstWhere(
               (p) => p.id == msg.senderId || p.callsign == msg.senderId,
               orElse: () => OperatorProfile(
@@ -1204,7 +1214,10 @@ class _MainShellViewState extends State<MainShellView> {
                         ),
                         icon: const Icon(Icons.call_end),
                         label: const Text('DECLINE', style: TextStyle(fontWeight: FontWeight.bold)),
-                        onPressed: () => Navigator.pop(ctx),
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          _declineCallSignal(peer);
+                        },
                       ),
                     ),
                     const SizedBox(width: 16),
@@ -1233,7 +1246,29 @@ class _MainShellViewState extends State<MainShellView> {
     );
   }
 
+  void _declineCallSignal(OperatorProfile peer) {
+    PttAudioService.stopCallTones();
+    final declineMsg = C2Message(
+      id: 'call-decline-${DateTime.now().millisecondsSinceEpoch}',
+      type: MessageType.callSignaling,
+      senderId: _myProfile.id,
+      senderPublicKey: _myProfile.publicKey,
+      recipientId: peer.id,
+      encryptedBody: 'CALL_DECLINE',
+      timestamp: DateTime.now(),
+      isMe: true,
+    );
+    _meshClient.sendMessage(declineMsg);
+    _p2pMeshEngine.sendP2PDirectMessage(declineMsg);
+
+    setState(() {
+      _isCallActive = false;
+      _activeCallPeer = null;
+    });
+  }
+
   void _acceptCallSignal(OperatorProfile peer) {
+    PttAudioService.stopCallTones();
     final acceptMsg = C2Message(
       id: 'call-accept-${DateTime.now().millisecondsSinceEpoch}',
       type: MessageType.callSignaling,

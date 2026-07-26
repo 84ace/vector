@@ -56,6 +56,49 @@ class PttAudioService {
     } catch (_) {}
   }
 
+  static Timer? _callToneTimer;
+
+  /// Starts repeating incoming call ringtone
+  static void startRingtone() {
+    stopCallTones();
+    _callToneTimer = Timer.periodic(const Duration(seconds: 3), (_) async {
+      await playPcmWavAudio(
+        frequency: 850,
+        amplitude: 0.6,
+        durationMs: 1200,
+      );
+    });
+    playPcmWavAudio(
+      frequency: 850,
+      amplitude: 0.6,
+      durationMs: 1200,
+    );
+  }
+
+  /// Starts repeating outgoing call ringback chime
+  static void startRingbackTone() {
+    stopCallTones();
+    _callToneTimer = Timer.periodic(const Duration(seconds: 4), (_) async {
+      await playPcmWavAudio(
+        frequency: 440,
+        amplitude: 0.4,
+        durationMs: 1500,
+      );
+    });
+    playPcmWavAudio(
+      frequency: 440,
+      amplitude: 0.4,
+      durationMs: 1500,
+    );
+  }
+
+  /// Stops all active ringtones & ringbacks
+  static void stopCallTones() {
+    _callToneTimer?.cancel();
+    _callToneTimer = null;
+    stopActivePlayer();
+  }
+
   static final Set<String> _processedMessageKeys = {};
   static StreamSubscription? _meshSub;
   static StreamSubscription? _p2pSub;
