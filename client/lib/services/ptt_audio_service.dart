@@ -39,6 +39,7 @@ class PttAudioService {
   static final ValueNotifier<int> clipNotifier = ValueNotifier<int>(0);
   static final ValueNotifier<String?> speakerNotifier = ValueNotifier<String?>(null);
   static final ValueNotifier<double> amplitudeNotifier = ValueNotifier<double>(0.0);
+  static Function(PttVoiceClip clip, bool autoPlay)? onClipReceived;
 
   static final Set<String> _processedMessageKeys = {};
   static StreamSubscription? _meshSub;
@@ -112,7 +113,7 @@ class PttAudioService {
         speakerNotifier.value = msg.senderId;
 
         final prefs = await SharedPreferences.getInstance();
-        final autoPlay = prefs.getBool('auto_play_ptt') ?? true;
+        final autoPlay = prefs.getBool('auto_play_ptt') ?? false;
         if (autoPlay) {
           playRadioAlert();
         }
@@ -134,7 +135,7 @@ class PttAudioService {
         amplitudeNotifier.value = 0.0;
 
         final prefs = await SharedPreferences.getInstance();
-        final autoPlay = prefs.getBool('auto_play_ptt') ?? true;
+        final autoPlay = prefs.getBool('auto_play_ptt') ?? false;
         final durationSecs = rxDurationSecs > 0
             ? rxDurationSecs
             : max(1, DateTime.now().difference(_incomingRecordingStartTime ?? DateTime.now()).inSeconds);
@@ -158,6 +159,8 @@ class PttAudioService {
           } else {
             playRadioAlert();
           }
+
+          onClipReceived?.call(clip, autoPlay);
           debugPrint('[PTT GLOBAL STORE] Saved voice clip from ${msg.senderId}, total clips=${globalVoiceClips.length}, autoPlay=$autoPlay');
         }
       }

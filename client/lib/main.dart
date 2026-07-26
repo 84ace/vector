@@ -220,6 +220,46 @@ class _MainShellViewState extends State<MainShellView> {
       myOperatorId: _myProfile.id,
     );
 
+    PttAudioService.onClipReceived = (clip, autoPlay) {
+      if (!mounted) return;
+      final senderPeer = _teamProfiles.firstWhere(
+        (p) => p.id == clip.senderCallsign || p.callsign.toUpperCase() == clip.senderCallsign.toUpperCase(),
+        orElse: () => OperatorProfile(
+          id: clip.senderCallsign,
+          callsign: clip.senderCallsign,
+          name: 'Squad Member',
+          role: OperatorRole.operator,
+          avatarBase64: '',
+          publicKey: '',
+          lastSeen: DateTime.now(),
+          isOnline: true,
+        ),
+      );
+
+      _addEventLog(
+        autoPlay ? 'LIVE PTT PLAYED' : 'VOICE CLIP BUFFERED',
+        'Voice clip (${clip.durationSecs}s) received from ${senderPeer.callsign}',
+        EventSeverity.info,
+      );
+
+      _triggerAudibleAndHapticAlert();
+
+      _showInAppNotification(
+        title: autoPlay
+            ? '📻 LIVE PTT FROM ${senderPeer.callsign.toUpperCase()}'
+            : '🎙️ VOICE CLIP FROM ${senderPeer.callsign.toUpperCase()}',
+        message: autoPlay
+            ? 'Playing live PTT transmission (${clip.durationSecs}s)...'
+            : 'Buffered ${clip.durationSecs}s voice clip. Tap to listen.',
+        color: autoPlay ? C2Colors.emeraldAccent : Colors.amberAccent,
+        onTap: () {
+          setState(() {
+            _currentIndex = 2; // Switch to PTT/Calls tab
+          });
+        },
+      );
+    };
+
     _meshClient.connectionState.listen((connected) {
       if (!mounted) return;
       setState(() {
@@ -284,35 +324,8 @@ class _MainShellViewState extends State<MainShellView> {
             _addEventLog('INCOMING CALL', 'Incoming call from ${peer.callsign}', EventSeverity.info);
             _showIncomingCallAlert(peer, isVideo: msg.encryptedBody.contains('VIDEO'));
           }
-        } else if ((msg.encryptedBody.contains('PTT_AUDIO_CHUNK') || msg.encryptedBody.contains('CALL_VOICE_STREAM')) && msg.senderId != _myProfile.id) {
-          // Process audio chunk / voice stream quietly without spawning UI notification banners
-        } else if (msg.encryptedBody.contains('PTT_START') && msg.senderId != _myProfile.id) {
-          final senderPeer = _teamProfiles.firstWhere(
-            (p) => p.id == msg.senderId || p.callsign == msg.senderId,
-            orElse: () => OperatorProfile(
-              id: msg.senderId,
-              callsign: msg.senderId,
-              name: 'Squad Member',
-              role: OperatorRole.operator,
-              avatarBase64: '',
-              publicKey: '',
-              lastSeen: DateTime.now(),
-              isOnline: true,
-            ),
-          );
-
-          _addEventLog('PTT AUDIO RECEIVED', 'Live PTT radio stream from ${senderPeer.callsign}', EventSeverity.info);
-          _triggerAudibleAndHapticAlert();
-          _showInAppNotification(
-            title: '📻 PTT AUDIO TRANSMISSION FROM ${senderPeer.callsign}',
-            message: 'Live voice radio stream active...',
-            color: Colors.cyanAccent,
-            onTap: () {
-              setState(() {
-                _currentIndex = 2;
-              });
-            },
-          );
+        } else if ((msg.encryptedBody.contains('PTT_AUDIO_CHUNK') || msg.encryptedBody.contains('CALL_VOICE_STREAM') || msg.encryptedBody.contains('PTT_START') || msg.encryptedBody.contains('PTT_STOP')) && msg.senderId != _myProfile.id) {
+          // Process PTT stream & signals quietly without premature notification banners
         }
       } else if (msg.encryptedBody.contains('PAIR_REQUEST')) {
         try {
