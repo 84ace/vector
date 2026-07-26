@@ -602,15 +602,20 @@ class _TacticalMapViewState extends State<TacticalMapView> {
   }
 
   Widget _buildConnectionStatusPill() {
-    String label = 'NO CONNECTION';
+    String label = 'OFFLINE / DISCONNECTED';
     Color color = Colors.redAccent;
 
-    if (widget.isMeshConnected) {
-      final nodeId = widget.activeNodeId;
-      label = 'LOCAL MESH CONNECTED ($nodeId)';
+    final hasMesh = widget.isMeshConnected;
+    final hasP2P = widget.isP2pConnected;
+
+    if (hasMesh && hasP2P) {
+      label = 'MESH & P2P ACTIVE (${widget.activeNodeId} | ${widget.p2pPeersCount} P2P PEERS)';
       color = C2Colors.emeraldAccent;
-    } else if (widget.isP2pConnected) {
-      label = 'DIRECT P2P CONNECTION (${widget.p2pPeersCount} PAIRED SQUAD PEERS)';
+    } else if (hasMesh) {
+      label = 'LOCAL MESH CONNECTED (${widget.activeNodeId})';
+      color = C2Colors.emeraldAccent;
+    } else if (hasP2P) {
+      label = 'DIRECT P2P CONNECTION (${widget.p2pPeersCount} PEERS)';
       color = Colors.cyanAccent;
     }
 

@@ -97,6 +97,18 @@ class P2PMeshEngine {
         final socket = await WebSocketTransformer.upgrade(request);
         _peerSockets[senderId] = socket;
 
+        if (senderId.isNotEmpty && senderId != 'unknown' && senderId != myOperatorId) {
+          final peerIp = request.connectionInfo?.remoteAddress.address ?? '';
+          final peer = PeerDevice(
+            operatorId: senderId,
+            address: peerIp,
+            port: p2pPort,
+            lastSeen: DateTime.now(),
+          );
+          _discoveredPeers[senderId] = peer;
+          _discoveredPeersController.add(_discoveredPeers.values.toList());
+        }
+
         socket.listen(
           (data) {
             try {

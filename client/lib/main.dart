@@ -1247,9 +1247,7 @@ class _MainShellViewState extends State<MainShellView> {
       );
     }
 
-    final pairedP2pPeers = _p2pMeshEngine.activePeers.keys.where((opId) {
-      return _teamProfiles.any((p) => p.id == opId && p.id != _myProfile.id);
-    }).length;
+    final activeP2pPeersCount = _p2pMeshEngine.activePeers.length;
 
     final List<Widget> pages = [
       TacticalMapView(
@@ -1259,9 +1257,9 @@ class _MainShellViewState extends State<MainShellView> {
         teamTelemetry: _teamTelemetry,
         teamBreadcrumbs: _telemetryService.teamBreadcrumbs,
         isMeshConnected: _isMeshConnected,
-        isP2pConnected: pairedP2pPeers > 0,
+        isP2pConnected: activeP2pPeersCount > 0,
         activeNodeId: _activeNodeId,
-        p2pPeersCount: pairedP2pPeers,
+        p2pPeersCount: activeP2pPeersCount,
         activeSosOperatorCallsign: _activeSosOperatorCallsign,
         onStartVoiceCall: (peer) {
           setState(() {

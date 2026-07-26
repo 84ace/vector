@@ -61,11 +61,30 @@ class TelemetryService {
       if (msg.type == MessageType.telemetry) {
         try {
           final Map<String, dynamic> data = jsonDecode(msg.encryptedBody);
-          final tele = Telemetry.fromJson(data);
-          if (tele.operatorId.isNotEmpty && tele.latitude != 0.0) {
+          final parsed = Telemetry.fromJson(data);
+          final effectiveOpId = parsed.operatorId.isNotEmpty ? parsed.operatorId : msg.senderId;
+
+          if (effectiveOpId.isNotEmpty && parsed.latitude != 0.0) {
+            final tele = Telemetry(
+              operatorId: effectiveOpId,
+              latitude: parsed.latitude,
+              longitude: parsed.longitude,
+              altitude: parsed.altitude,
+              speed: parsed.speed,
+              heading: parsed.heading,
+              accuracy: parsed.accuracy,
+              batteryLevel: parsed.batteryLevel,
+              isCharging: parsed.isCharging,
+              networkType: parsed.networkType,
+              cellularSignalBars: parsed.cellularSignalBars,
+              wifiSSID: parsed.wifiSSID,
+              timestamp: parsed.timestamp,
+            );
             _recordTeamTelemetry(tele);
           }
-        } catch (_) {}
+        } catch (e) {
+          debugPrint('[TELEMETRY_SERVICE ERROR] handleIncomingTelemetry failed: $e');
+        }
       }
     }
 
