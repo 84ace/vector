@@ -80,21 +80,23 @@ class PttAudioService {
   /// Configures global audio output device (Loudspeaker/Hands-Free vs Internal Earpiece Speaker)
   static Future<void> configureAudioOutput({required bool useLoudspeaker}) async {
     try {
-      await AudioPlayer.global.setAudioContext(AudioContext(
+      final audioContext = AudioContext(
         android: AudioContextAndroid(
           stayAwake: true,
-          contentType: AndroidContentType.speech,
-          usageType: AndroidUsageType.voiceCommunication,
-          audioFocus: AndroidAudioFocus.gain,
+          contentType: useLoudspeaker ? AndroidContentType.music : AndroidContentType.speech,
+          usageType: useLoudspeaker ? AndroidUsageType.media : AndroidUsageType.voiceCommunication,
+          audioFocus: AndroidAudioFocus.gainTransientMayDuck,
           audioMode: useLoudspeaker ? AndroidAudioMode.normal : AndroidAudioMode.inCall,
         ),
         iOS: AudioContextIOS(
-          category: AVAudioSessionCategory.playAndRecord,
+          category: useLoudspeaker ? AVAudioSessionCategory.playback : AVAudioSessionCategory.playAndRecord,
           options: useLoudspeaker
               ? {AVAudioSessionOptions.defaultToSpeaker, AVAudioSessionOptions.allowBluetooth}
               : {AVAudioSessionOptions.allowBluetooth},
         ),
-      ));
+      );
+
+      await AudioPlayer.global.setAudioContext(audioContext);
       debugPrint('[PTT AUDIO SERVICE] Output configured: ${useLoudspeaker ? "LOUDSPEAKER (HANDS-FREE)" : "INTERNAL EARPIECE"}');
     } catch (e) {
       debugPrint('[PTT AUDIO OUTPUT CONFIG ERROR] $e');
@@ -136,8 +138,8 @@ class PttAudioService {
           final jsonStr = prefix.isNotEmpty ? body.replaceFirst(prefix, '') : body;
           final Map<String, dynamic> data = jsonDecode(jsonStr);
           final amp = (data['amplitude'] as num?)?.toDouble() ?? 0.5;
-          final callsign = data['callsign'] ?? msg.senderId;
-          final audioBase64 = data['audio_base64'] as String?;
+          final callsign = (data['callsign'] ?? data['sender_callsign'] ?? msg.senderId) as String;
+          final audioBase64 = (data['audio_base64'] ?? data['audio_bytes']) as String?;
 
           _incomingAmplitudes.add(amp);
           speakerNotifier.value = callsign;
@@ -234,8 +236,27 @@ class PttAudioService {
       }
       await file.writeAsBytes(audioBytes, flush: true);
 
+      final prefs = await SharedPreferences.getInstance();
+      final useLoudspeaker = prefs.getBool('ptt_use_loudspeaker') ?? true;
+
       final player = AudioPlayer();
       _activePlayer = player;
+
+      await player.setAudioContext(AudioContext(
+        android: AudioContextAndroid(
+          stayAwake: true,
+          contentType: useLoudspeaker ? AndroidContentType.music : AndroidContentType.speech,
+          usageType: useLoudspeaker ? AndroidUsageType.media : AndroidUsageType.voiceCommunication,
+          audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+          audioMode: useLoudspeaker ? AndroidAudioMode.normal : AndroidAudioMode.inCall,
+        ),
+        iOS: AudioContextIOS(
+          category: useLoudspeaker ? AVAudioSessionCategory.playback : AVAudioSessionCategory.playAndRecord,
+          options: useLoudspeaker
+              ? {AVAudioSessionOptions.defaultToSpeaker, AVAudioSessionOptions.allowBluetooth}
+              : {AVAudioSessionOptions.allowBluetooth},
+        ),
+      ));
 
       await player.setVolume(1.0);
       await player.play(DeviceFileSource(file.path));

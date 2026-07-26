@@ -687,6 +687,22 @@ class _CallViewState extends State<CallView> {
         _clipDuration = Duration(seconds: max(1, clip.durationSecs));
       });
 
+      await player.setAudioContext(AudioContext(
+        android: AudioContextAndroid(
+          stayAwake: true,
+          contentType: _useLoudspeaker ? AndroidContentType.music : AndroidContentType.speech,
+          usageType: _useLoudspeaker ? AndroidUsageType.media : AndroidUsageType.voiceCommunication,
+          audioFocus: AndroidAudioFocus.gainTransientMayDuck,
+          audioMode: _useLoudspeaker ? AndroidAudioMode.normal : AndroidAudioMode.inCall,
+        ),
+        iOS: AudioContextIOS(
+          category: _useLoudspeaker ? AVAudioSessionCategory.playback : AVAudioSessionCategory.playAndRecord,
+          options: _useLoudspeaker
+              ? {AVAudioSessionOptions.defaultToSpeaker, AVAudioSessionOptions.allowBluetooth}
+              : {AVAudioSessionOptions.allowBluetooth},
+        ),
+      ));
+
       await player.setVolume(1.0);
       await player.play(DeviceFileSource(file.path));
 
@@ -1315,7 +1331,6 @@ class _CallViewState extends State<CallView> {
     return Container(
       width: 230,
       margin: const EdgeInsets.only(right: 12),
-      padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         color: isCurrentPlaying
             ? const Color(0xFF0F2942)
@@ -1328,143 +1343,152 @@ class _CallViewState extends State<CallView> {
           width: isCurrentPlaying ? 1.5 : 1.0,
         ),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    isCurrentPlaying ? Icons.volume_up : (clip.isPlayed ? Icons.history : Icons.mark_chat_unread),
-                    color: isCurrentPlaying ? Colors.cyanAccent : (clip.isPlayed ? Colors.white54 : Colors.amberAccent),
-                    size: 14,
-                  ),
-                  const SizedBox(width: 6),
-                  Text(
-                    clip.senderCallsign,
-                    style: TextStyle(
-                      color: isCurrentPlaying ? Colors.cyanAccent : Colors.white,
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-              Row(
-                children: [
-                  Text(
-                    isCurrentPlaying
-                        ? '${_formatDuration(_clipPosition.inSeconds)} / ${_formatDuration(clip.durationSecs)}'
-                        : _formatDuration(clip.durationSecs),
-                    style: TextStyle(
-                      color: isCurrentPlaying ? Colors.cyanAccent : Colors.white54,
-                      fontSize: 9,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(width: 6),
-                  InkWell(
-                    onTap: () => PttAudioService.deleteClip(clip.id),
-                    child: const Icon(Icons.close, color: Colors.white38, size: 14),
-                  ),
-                ],
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 4),
-
-          GestureDetector(
-            onTap: () => _playRecordedClip(clip),
-            child: SizedBox(
-              height: 28,
-              child: Stack(
-                alignment: Alignment.centerLeft,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: List.generate(barHeights.length, (idx) {
-                      final barProgress = idx / barHeights.length;
-                      final isPassed = progress >= barProgress;
-
-                      return AnimatedContainer(
-                        duration: const Duration(milliseconds: 60),
-                        width: 3.5,
-                        height: 28 * barHeights[idx],
-                        decoration: BoxDecoration(
-                          color: isPassed
-                              ? (isCurrentPlaying ? Colors.cyanAccent : C2Colors.emeraldAccent)
-                              : (clip.isPlayed ? Colors.white24 : Colors.amberAccent.withOpacity(0.4)),
-                          borderRadius: BorderRadius.circular(2),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => _playRecordedClip(clip),
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          isCurrentPlaying ? Icons.volume_up : (clip.isPlayed ? Icons.history : Icons.mark_chat_unread),
+                          color: isCurrentPlaying ? Colors.cyanAccent : (clip.isPlayed ? Colors.white54 : Colors.amberAccent),
+                          size: 14,
                         ),
-                      );
-                    }),
-                  ),
-                  if (isCurrentPlaying)
-                    Positioned(
-                      left: (progress * 200).clamp(0.0, 200.0),
-                      top: 0,
-                      bottom: 0,
-                      child: Container(
-                        width: 2.5,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(2),
-                          boxShadow: const [
-                            BoxShadow(color: Colors.cyanAccent, blurRadius: 6, spreadRadius: 1),
-                          ],
+                        const SizedBox(width: 6),
+                        Text(
+                          clip.senderCallsign,
+                          style: TextStyle(
+                            color: isCurrentPlaying ? Colors.cyanAccent : Colors.white,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
-                      ),
+                      ],
                     ),
-                ],
-              ),
-            ),
-          ),
+                    Row(
+                      children: [
+                        Text(
+                          isCurrentPlaying
+                              ? '${_formatDuration(_clipPosition.inSeconds)} / ${_formatDuration(clip.durationSecs)}'
+                              : _formatDuration(clip.durationSecs),
+                          style: TextStyle(
+                            color: isCurrentPlaying ? Colors.cyanAccent : Colors.white54,
+                            fontSize: 9,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => PttAudioService.deleteClip(clip.id),
+                          child: const Padding(
+                            padding: EdgeInsets.all(4.0),
+                            child: Icon(Icons.close, color: Colors.white38, size: 14),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
 
-          const SizedBox(height: 4),
+                const SizedBox(height: 4),
 
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                '${(clip.audioData.length / 1024).toStringAsFixed(1)} KB',
-                style: const TextStyle(color: Colors.white38, fontSize: 8),
-              ),
-              InkWell(
-                onTap: () => _playRecordedClip(clip),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: isCurrentPlaying ? Colors.cyanAccent : (clip.isPlayed ? C2Colors.slateCard : Colors.amberAccent),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
+                SizedBox(
+                  height: 28,
+                  child: Stack(
+                    alignment: Alignment.centerLeft,
                     children: [
-                      Icon(
-                        isCurrentPlaying ? Icons.pause : Icons.play_arrow,
-                        color: isCurrentPlaying ? Colors.black : (clip.isPlayed ? Colors.white : Colors.black),
-                        size: 12,
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: List.generate(barHeights.length, (idx) {
+                          final barProgress = idx / barHeights.length;
+                          final isPassed = progress >= barProgress;
+
+                          return AnimatedContainer(
+                            duration: const Duration(milliseconds: 60),
+                            width: 3.5,
+                            height: 28 * barHeights[idx],
+                            decoration: BoxDecoration(
+                              color: isPassed
+                                  ? (isCurrentPlaying ? Colors.cyanAccent : C2Colors.emeraldAccent)
+                                  : (clip.isPlayed ? Colors.white24 : Colors.amberAccent.withOpacity(0.4)),
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          );
+                        }),
                       ),
-                      const SizedBox(width: 4),
-                      Text(
-                        isCurrentPlaying ? 'PAUSE' : 'PLAY FILE',
-                        style: TextStyle(
-                          color: isCurrentPlaying ? Colors.black : (clip.isPlayed ? Colors.white : Colors.black),
-                          fontSize: 9,
-                          fontWeight: FontWeight.bold,
+                      if (isCurrentPlaying)
+                        Positioned(
+                          left: (progress * 200).clamp(0.0, 200.0),
+                          top: 0,
+                          bottom: 0,
+                          child: Container(
+                            width: 2.5,
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(2),
+                              boxShadow: const [
+                                BoxShadow(color: Colors.cyanAccent, blurRadius: 6, spreadRadius: 1),
+                              ],
+                            ),
+                          ),
                         ),
-                      ),
                     ],
                   ),
                 ),
-              ),
-            ],
+
+                const SizedBox(height: 4),
+
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      '${(clip.audioData.length / 1024).toStringAsFixed(1)} KB',
+                      style: const TextStyle(color: Colors.white38, fontSize: 8),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: isCurrentPlaying ? Colors.cyanAccent : (clip.isPlayed ? C2Colors.slateCard : Colors.amberAccent),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            isCurrentPlaying ? Icons.pause : Icons.play_arrow,
+                            color: isCurrentPlaying ? Colors.black : (clip.isPlayed ? Colors.white : Colors.black),
+                            size: 12,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            isCurrentPlaying ? 'PAUSE' : 'PLAY FILE',
+                            style: TextStyle(
+                              color: isCurrentPlaying ? Colors.black : (clip.isPlayed ? Colors.white : Colors.black),
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
-        ],
+        ),
       ),
     );
   }
