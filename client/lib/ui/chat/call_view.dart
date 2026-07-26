@@ -743,7 +743,7 @@ class _CallViewState extends State<CallView> {
                 Icon(Icons.mic, color: Colors.cyanAccent, size: 20),
                 SizedBox(width: 8),
                 Text(
-                  'PTT AUDIO & VOICE/VIDEO CALLS',
+                  'PTT AUDIO & CALLS',
                   style: TextStyle(
                     color: Colors.white,
                     fontSize: 13,
@@ -753,6 +753,13 @@ class _CallViewState extends State<CallView> {
                 ),
               ],
             ),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.tune, color: Colors.cyanAccent),
+                tooltip: 'PTT & Audio Settings',
+                onPressed: () => _showPttSettingsModal(context),
+              ),
+            ],
           ),
           body: SingleChildScrollView(
             physics: const BouncingScrollPhysics(),
@@ -764,140 +771,15 @@ class _CallViewState extends State<CallView> {
                   width: double.infinity,
                   padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
                   color: C2Colors.emeraldAccent.withOpacity(0.15),
-                  child: Row(
+                  child: const Row(
                     children: [
-                      const Icon(Icons.verified_user, color: C2Colors.emeraldAccent, size: 13),
-                      const SizedBox(width: 6),
-                      const Expanded(
+                      Icon(Icons.verified_user, color: C2Colors.emeraldAccent, size: 13),
+                      SizedBox(width: 6),
+                      Expanded(
                         child: Text(
-                          'WebRTC Mic Active (Spacebar / Hold)',
+                          'WebRTC Mic Active (Spacebar / Hold PTT Button)',
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(color: C2Colors.emeraldAccent, fontSize: 10, fontWeight: FontWeight.bold),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.cyanAccent,
-                          foregroundColor: Colors.black,
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          minimumSize: Size.zero,
-                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        ),
-                        icon: Icon(_isTestingMic ? Icons.graphic_eq : Icons.mic_external_on, size: 12),
-                        label: Text(_isTestingMic ? 'TESTING...' : 'TEST MIC (3s)', style: const TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
-                        onPressed: _isTestingMic ? null : _runHardwareMicTest,
-                      ),
-                    ],
-                  ),
-                ),
-
-                if (_micTestStatus.isNotEmpty) ...[
-                  Container(
-                    width: double.infinity,
-                    color: Colors.amber.withOpacity(0.2),
-                    padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
-                    child: Text(
-                      'HARDWARE MIC TEST: $_micTestStatus',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: Colors.amberAccent, fontSize: 10, fontWeight: FontWeight.bold),
-                    ),
-                  ),
-                ],
-
-                const SizedBox(height: 10),
-
-                // PTT Scope Selector Chips
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'PTT TRANSMISSION SCOPE',
-                        style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8),
-                      ),
-                      const SizedBox(height: 6),
-                      SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: Row(
-                          children: [
-                            _buildScopeChip(PttTargetScope.direct, 'DIRECT 1:1', Icons.person),
-                            const SizedBox(width: 8),
-                            _buildScopeChip(PttTargetScope.group, 'SQUAD GROUP', Icons.groups),
-                            const SizedBox(width: 8),
-                            _buildScopeChip(PttTargetScope.broadcast, 'BROADCAST', Icons.campaign),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                const SizedBox(height: 10),
-
-                // PTT Playback Mode Toggle & Audio Compression Toggle
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Column(
-                    children: [
-                      SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: Row(
-                          children: [
-                            const Icon(Icons.tune, color: Colors.cyanAccent, size: 14),
-                            const SizedBox(width: 6),
-                            const Text(
-                              'PTT RECEPTION MODE',
-                              style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.5),
-                            ),
-                            const SizedBox(width: 12),
-                            ChoiceChip(
-                              label: const Text('AUTO-PLAY LIVE', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
-                              selected: _autoPlayPtt,
-                              selectedColor: C2Colors.emeraldAccent,
-                              labelStyle: TextStyle(color: _autoPlayPtt ? Colors.black : Colors.white70),
-                              onSelected: (val) => _saveAutoPlaySetting(true),
-                            ),
-                            const SizedBox(width: 6),
-                            ChoiceChip(
-                              label: const Text('PLAY LATER', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
-                              selected: !_autoPlayPtt,
-                              selectedColor: Colors.amberAccent,
-                              labelStyle: TextStyle(color: !_autoPlayPtt ? Colors.black : Colors.white70),
-                              onSelected: (val) => _saveAutoPlaySetting(false),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      SingleChildScrollView(
-                        scrollDirection: Axis.horizontal,
-                        child: Row(
-                          children: [
-                            const Icon(Icons.compress, color: Colors.cyanAccent, size: 14),
-                            const SizedBox(width: 6),
-                            const Text(
-                              'AUDIO CODEC PROFILE',
-                              style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.5),
-                            ),
-                            const SizedBox(width: 12),
-                            ChoiceChip(
-                              label: const Text('STANDARD (24 kbps)', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
-                              selected: !_useNarrowbandCompression,
-                              selectedColor: C2Colors.emeraldAccent,
-                              labelStyle: TextStyle(color: !_useNarrowbandCompression ? Colors.black : Colors.white70),
-                              onSelected: (val) => _saveCompressionSetting(false),
-                            ),
-                            const SizedBox(width: 6),
-                            ChoiceChip(
-                              label: const Text('HIGH COMPRESSION (12 kbps)', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
-                              selected: _useNarrowbandCompression,
-                              selectedColor: Colors.amberAccent,
-                              labelStyle: TextStyle(color: _useNarrowbandCompression ? Colors.black : Colors.white70),
-                              onSelected: (val) => _saveCompressionSetting(true),
-                            ),
-                          ],
                         ),
                       ),
                     ],
@@ -1528,6 +1410,164 @@ class _CallViewState extends State<CallView> {
           ),
         ],
       ),
+    );
+  }
+
+  void _showPttSettingsModal(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF0F172A),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Padding(
+              padding: const EdgeInsets.all(20.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.tune, color: Colors.cyanAccent, size: 20),
+                          SizedBox(width: 8),
+                          Text(
+                            'PTT & AUDIO SETTINGS',
+                            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                          ),
+                        ],
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white54),
+                        onPressed: () => Navigator.pop(ctx),
+                      ),
+                    ],
+                  ),
+                  const Divider(color: Colors.white12),
+                  const SizedBox(height: 10),
+
+                  // Hardware Mic Test
+                  const Text('HARDWARE MIC DIAGNOSTICS', style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          _micTestStatus.isEmpty ? 'WebRTC Mic Ready' : 'MIC TEST: $_micTestStatus',
+                          style: TextStyle(color: _micTestStatus.isNotEmpty ? Colors.amberAccent : Colors.white70, fontSize: 11),
+                        ),
+                      ),
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.cyanAccent,
+                          foregroundColor: Colors.black,
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                        ),
+                        icon: Icon(_isTestingMic ? Icons.graphic_eq : Icons.mic_external_on, size: 14),
+                        label: Text(_isTestingMic ? 'TESTING...' : 'TEST MIC (3s)', style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                        onPressed: _isTestingMic
+                            ? null
+                            : () {
+                                _runHardwareMicTest();
+                                setModalState(() {});
+                              },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Scope Selection
+                  const Text('TRANSMISSION SCOPE', style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 6),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        _buildScopeChip(PttTargetScope.direct, 'DIRECT 1:1', Icons.person),
+                        const SizedBox(width: 8),
+                        _buildScopeChip(PttTargetScope.group, 'SQUAD GROUP', Icons.groups),
+                        const SizedBox(width: 8),
+                        _buildScopeChip(PttTargetScope.broadcast, 'BROADCAST', Icons.campaign),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Reception Mode
+                  const Text('PTT RECEPTION MODE', style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      ChoiceChip(
+                        label: const Text('AUTO-PLAY LIVE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                        selected: _autoPlayPtt,
+                        selectedColor: C2Colors.emeraldAccent,
+                        labelStyle: TextStyle(color: _autoPlayPtt ? Colors.black : Colors.white70),
+                        onSelected: (val) {
+                          _saveAutoPlaySetting(true);
+                          setModalState(() {});
+                          setState(() {});
+                        },
+                      ),
+                      const SizedBox(width: 8),
+                      ChoiceChip(
+                        label: const Text('PLAY LATER', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                        selected: !_autoPlayPtt,
+                        selectedColor: Colors.amberAccent,
+                        labelStyle: TextStyle(color: !_autoPlayPtt ? Colors.black : Colors.white70),
+                        onSelected: (val) {
+                          _saveAutoPlaySetting(false);
+                          setModalState(() {});
+                          setState(() {});
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Audio Codec Profile
+                  const Text('AUDIO CODEC PROFILE', style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: [
+                      ChoiceChip(
+                        label: const Text('STANDARD (24 kbps)', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                        selected: !_useNarrowbandCompression,
+                        selectedColor: C2Colors.emeraldAccent,
+                        labelStyle: TextStyle(color: !_useNarrowbandCompression ? Colors.black : Colors.white70),
+                        onSelected: (val) {
+                          _saveCompressionSetting(false);
+                          setModalState(() {});
+                          setState(() {});
+                        },
+                      ),
+                      const SizedBox(width: 8),
+                      ChoiceChip(
+                        label: const Text('HIGH COMPRESSION (12 kbps)', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                        selected: _useNarrowbandCompression,
+                        selectedColor: Colors.amberAccent,
+                        labelStyle: TextStyle(color: _useNarrowbandCompression ? Colors.black : Colors.white70),
+                        onSelected: (val) {
+                          _saveCompressionSetting(true);
+                          setModalState(() {});
+                          setState(() {});
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }

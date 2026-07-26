@@ -1443,7 +1443,7 @@ class _MainShellViewState extends State<MainShellView> {
         meshClient: _meshClient,
         p2pMeshEngine: _p2pMeshEngine,
       ),
-      _buildTeamTelemetryDashboard(),
+      _buildContactsView(),
       QrPairingView(
         myProfile: _myProfile,
         meshNodeUrls: candidateMeshNodes,
@@ -1546,9 +1546,9 @@ class _MainShellViewState extends State<MainShellView> {
             label: 'PTT/Calls',
           ),
           const BottomNavigationBarItem(
-            icon: Icon(Icons.phone_android),
-            activeIcon: Icon(Icons.phone_android),
-            label: 'Telemetry',
+            icon: Icon(Icons.people_alt_outlined),
+            activeIcon: Icon(Icons.people_alt),
+            label: 'Contacts',
           ),
           const BottomNavigationBarItem(
             icon: Icon(Icons.qr_code_2),
@@ -1576,17 +1576,17 @@ class _MainShellViewState extends State<MainShellView> {
     );
   }
 
-  Widget _buildTeamTelemetryDashboard() {
+  Widget _buildContactsView() {
     return Scaffold(
       backgroundColor: const Color(0xFF0F172A),
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E293B),
         title: const Row(
           children: [
-            Icon(Icons.phone_android, color: Colors.cyanAccent, size: 20),
+            Icon(Icons.people_alt, color: Colors.cyanAccent, size: 20),
             SizedBox(width: 8),
             Text(
-              'TEAM DEVICE TELEMETRY & STATS',
+              'SQUAD CONTACTS & TELEMETRY',
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 13,
@@ -1596,6 +1596,17 @@ class _MainShellViewState extends State<MainShellView> {
             ),
           ],
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.person_add, color: Colors.cyanAccent),
+            tooltip: 'Pair New Operator',
+            onPressed: () {
+              setState(() {
+                _currentIndex = 4; // Switch to Pairing tab
+              });
+            },
+          ),
+        ],
       ),
       body: ListView.builder(
         padding: const EdgeInsets.all(16),
@@ -1605,124 +1616,286 @@ class _MainShellViewState extends State<MainShellView> {
           final tele = profile.id == _myProfile.id
               ? _myTelemetry
               : _teamTelemetry[profile.id];
+          final isMe = profile.id == _myProfile.id;
 
-          return Container(
+          return Card(
+            color: const Color(0xFF1E293B),
             margin: const EdgeInsets.only(bottom: 12),
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: const Color(0xFF1E293B),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+              side: BorderSide(
                 color: tele != null && !tele.isStale
                     ? C2Colors.emeraldAccent.withOpacity(0.5)
                     : Colors.amberAccent.withOpacity(0.5),
+                width: 1.5,
               ),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: () => _showContactActionSheet(profile),
+              child: Padding(
+                padding: const EdgeInsets.all(14.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        CircleAvatar(
-                          radius: 16,
-                          backgroundColor: const Color(0xFF0F172A),
-                          child: Text(
-                            profile.callsign.substring(0, 2),
-                            style: const TextStyle(
-                                color: Colors.cyanAccent,
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
+                        Row(
                           children: [
-                            Text(
-                              '${profile.callsign} (${profile.name})',
-                              style: const TextStyle(
-                                  color: Colors.white,
+                            CircleAvatar(
+                              radius: 18,
+                              backgroundColor: const Color(0xFF0F172A),
+                              child: Text(
+                                profile.callsign.substring(0, profile.callsign.length >= 2 ? 2 : profile.callsign.length),
+                                style: const TextStyle(
+                                    color: Colors.cyanAccent,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Text(
+                                      profile.callsign,
+                                      style: const TextStyle(
+                                          color: Colors.white,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 14),
+                                    ),
+                                    if (isMe) ...[
+                                      const SizedBox(width: 6),
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                        decoration: BoxDecoration(
+                                          color: Colors.cyan.withOpacity(0.2),
+                                          borderRadius: BorderRadius.circular(4),
+                                        ),
+                                        child: const Text('YOU', style: TextStyle(color: Colors.cyanAccent, fontSize: 8, fontWeight: FontWeight.bold)),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                Text(
+                                  profile.role.name.toUpperCase(),
+                                  style: const TextStyle(
+                                      color: Colors.cyanAccent, fontSize: 9),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
+                              decoration: BoxDecoration(
+                                color: tele != null && !tele.isStale
+                                    ? C2Colors.emeraldAccent.withOpacity(0.2)
+                                    : Colors.amber.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                tele != null && !tele.isStale
+                                    ? 'LIVE TELEMETRY'
+                                    : 'STALE SIGNAL',
+                                style: TextStyle(
+                                  color: tele != null && !tele.isStale
+                                      ? C2Colors.emeraldAccent
+                                      : Colors.amberAccent,
+                                  fontSize: 9,
                                   fontWeight: FontWeight.bold,
-                                  fontSize: 13),
+                                ),
+                              ),
                             ),
-                            Text(
-                              profile.role.name.toUpperCase(),
-                              style: const TextStyle(
-                                  color: Colors.cyanAccent, fontSize: 9),
-                            ),
+                            const SizedBox(width: 6),
+                            const Icon(Icons.chevron_right, color: Colors.white38, size: 18),
                           ],
                         ),
                       ],
                     ),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: tele != null && !tele.isStale
-                            ? C2Colors.emeraldAccent.withOpacity(0.2)
-                            : Colors.amber.withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(4),
+                    const Divider(color: Colors.white12, height: 16),
+                    if (tele != null) ...[
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        children: [
+                          _buildStatTile(
+                            icon: Icons.battery_charging_full,
+                            label: 'BATTERY',
+                            value: '${tele.batteryLevel}%',
+                            color: tele.batteryLevel > 20
+                                ? C2Colors.emeraldAccent
+                                : Colors.redAccent,
+                          ),
+                          _buildStatTile(
+                            icon: Icons.wifi,
+                            label: 'NET TYPE',
+                            value: tele.networkType.name.toUpperCase(),
+                            color: Colors.cyanAccent,
+                          ),
+                          _buildStatTile(
+                            icon: Icons.signal_cellular_alt,
+                            label: 'CELL SIGNAL',
+                            value: '${tele.cellularSignalBars}/4 BARS',
+                            color: Colors.amberAccent,
+                          ),
+                          _buildStatTile(
+                            icon: Icons.router,
+                            label: 'WI-FI SSID',
+                            value: tele.wifiSSID.isNotEmpty ? tele.wifiSSID : 'NONE',
+                            color: Colors.purpleAccent,
+                          ),
+                        ],
                       ),
-                      child: Text(
-                        tele != null && !tele.isStale
-                            ? 'LIVE TELEMETRY'
-                            : 'STALE SIGNAL',
-                        style: TextStyle(
-                          color: tele != null && !tele.isStale
-                              ? C2Colors.emeraldAccent
-                              : Colors.amberAccent,
-                          fontSize: 9,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
+                    ] else ...[
+                      const Text('No telemetry frames received yet.',
+                          style: TextStyle(color: Colors.white38, fontSize: 11)),
+                    ],
                   ],
                 ),
-                const Divider(color: Colors.white12, height: 16),
-                if (tele != null) ...[
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    children: [
-                      _buildStatTile(
-                        icon: Icons.battery_charging_full,
-                        label: 'BATTERY',
-                        value: '${tele.batteryLevel}%',
-                        color: tele.batteryLevel > 20
-                            ? C2Colors.emeraldAccent
-                            : Colors.redAccent,
-                      ),
-                      _buildStatTile(
-                        icon: Icons.wifi,
-                        label: 'NET TYPE',
-                        value: tele.networkType.name.toUpperCase(),
-                        color: Colors.cyanAccent,
-                      ),
-                      _buildStatTile(
-                        icon: Icons.signal_cellular_alt,
-                        label: 'CELL SIGNAL',
-                        value: '${tele.cellularSignalBars}/4 BARS',
-                        color: Colors.amberAccent,
-                      ),
-                      _buildStatTile(
-                        icon: Icons.router,
-                        label: 'WI-FI SSID',
-                        value: tele.wifiSSID,
-                        color: Colors.purpleAccent,
-                      ),
-                    ],
-                  ),
-                ] else ...[
-                  const Text('No telemetry frames received yet.',
-                      style: TextStyle(color: Colors.white38, fontSize: 11)),
-                ],
-              ],
+              ),
             ),
           );
         },
       ),
+    );
+  }
+
+  void _showContactActionSheet(OperatorProfile peer) {
+    final isMe = peer.id == _myProfile.id;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF0F172A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    CircleAvatar(
+                      radius: 22,
+                      backgroundColor: C2Colors.slateCard,
+                      child: Text(
+                        peer.callsign.substring(0, peer.callsign.length >= 2 ? 2 : peer.callsign.length),
+                        style: const TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold, fontSize: 16),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            peer.callsign,
+                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
+                          ),
+                          Text(
+                            isMe ? 'Your Local Device Profile' : 'Verified Squad Contact',
+                            style: TextStyle(color: isMe ? Colors.cyanAccent : C2Colors.emeraldAccent, fontSize: 11),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close, color: Colors.white54),
+                      onPressed: () => Navigator.pop(ctx),
+                    ),
+                  ],
+                ),
+                const Divider(color: Colors.white12, height: 20),
+
+                if (!isMe) ...[
+                  ListTile(
+                    leading: const Icon(Icons.chat, color: Colors.cyanAccent),
+                    title: const Text('Send Text Message', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    subtitle: const Text('Open 1-to-1 comms chat', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      setState(() {
+                        _activeChatPeer = peer;
+                        _activeChatSubTab = 0;
+                        _currentIndex = 1; // Switch to Comms tab
+                      });
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.phone, color: C2Colors.emeraldAccent),
+                    title: const Text('Voice Call', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    subtitle: const Text('Start full-duplex voice call', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      setState(() {
+                        _activeCallPeer = peer;
+                        _isCallActive = true;
+                        _currentIndex = 2; // Switch to PTT/Calls tab
+                      });
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.videocam, color: Colors.purpleAccent),
+                    title: const Text('Video Call', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    subtitle: const Text('Start full-duplex video call', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      setState(() {
+                        _activeCallPeer = peer;
+                        _isCallActive = true;
+                        _currentIndex = 2; // Switch to PTT/Calls tab
+                      });
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.map, color: Colors.amberAccent),
+                    title: const Text('View Location on Map', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    subtitle: const Text('Center tactical map on operator GPS', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      setState(() {
+                        _currentIndex = 0; // Switch to Map tab
+                      });
+                    },
+                  ),
+                  const Divider(color: Colors.white12, height: 16),
+                  ListTile(
+                    leading: const Icon(Icons.person_remove, color: Colors.redAccent),
+                    title: const Text('Unpair & Delete Contact', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
+                    subtitle: const Text('Remove from squad directory', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      _removeContactInitiatedByMe(peer.id);
+                    },
+                  ),
+                ] else ...[
+                  ListTile(
+                    leading: const Icon(Icons.settings, color: Colors.cyanAccent),
+                    title: const Text('Manage Local Profile', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+                    subtitle: const Text('Edit callsign and profile settings', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      setState(() {
+                        _currentIndex = 5; // Switch to Settings tab
+                      });
+                    },
+                  ),
+                ],
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
