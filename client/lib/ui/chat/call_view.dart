@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
@@ -83,6 +84,15 @@ class _CallViewState extends State<CallView> {
   Timer? _pttAudioStreamTimer;
   Timer? _voiceCallStreamTimer;
   final List<double> _audioWaveform = List.generate(28, (_) => 0.05);
+
+  // PTT Voice Clip Card Audio Playback State
+  String? _playingClipId;
+  double _clipPlaybackProgress = 0.0;
+  Duration _clipPosition = Duration.zero;
+  Duration _clipDuration = Duration.zero;
+  AudioPlayer? _clipPlayer;
+  StreamSubscription? _clipPosSub;
+  StreamSubscription? _clipCompleteSub;
 
   @override
   void initState() {
@@ -269,6 +279,13 @@ class _CallViewState extends State<CallView> {
     PttAudioService.clipNotifier.removeListener(_onClipsUpdated);
     PttAudioService.speakerNotifier.removeListener(_onSpeakerUpdated);
     PttAudioService.amplitudeNotifier.removeListener(_onAmplitudeUpdated);
+    _clipPosSub?.cancel();
+    _clipCompleteSub?.cancel();
+    try {
+      _clipPlayer?.stop();
+      _clipPlayer?.dispose();
+    } catch (_) {}
+    _clipPlayer = null;
     _pttRecorder?.dispose();
     try {
       _voiceCallRecorder?.dispose();
@@ -606,31 +623,94 @@ class _CallViewState extends State<CallView> {
   }
 
   void _playRecordedClip(PttVoiceClip clip) async {
+    if (_playingClipId == clip.id && _clipPlayer != null) {
+      _clipPosSub?.cancel();
+      _clipCompleteSub?.cancel();
+      try {
+        await _clipPlayer?.stop();
+        await _clipPlayer?.dispose();
+      } catch (_) {}
+      _clipPlayer = null;
+      if (mounted) {
+        setState(() {
+          _playingClipId = null;
+          _clipPlaybackProgress = 0.0;
+        });
+      }
+      return;
+    }
+
+    _clipPosSub?.cancel();
+    _clipCompleteSub?.cancel();
+    try {
+      await _clipPlayer?.stop();
+      await _clipPlayer?.dispose();
+    } catch (_) {}
+    _clipPlayer = null;
+
     clip.isPlayed = true;
     PttAudioService.clipNotifier.value = PttAudioService.globalVoiceClips.length;
 
-    setState(() {
-      _incomingPttSpeakerCallsign = clip.senderCallsign;
-    });
+    try {
+      final isWav = clip.audioData.length >= 4 &&
+          clip.audioData[0] == 0x52 &&
+          clip.audioData[1] == 0x49 &&
+          clip.audioData[2] == 0x46 &&
+          clip.audioData[3] == 0x46;
+      final ext = isWav ? 'wav' : 'm4a';
 
-    if (clip.audioData.isNotEmpty) {
-      await PttAudioService.playAudioBytes(clip.audioData);
-    }
+      final tempDir = await getTemporaryDirectory();
+      final file = File('${tempDir.path}/play_clip_${clip.id}.$ext');
+      await file.writeAsBytes(clip.audioData, flush: true);
 
-    for (final amp in clip.amplitudes) {
-      if (!mounted) break;
+      final player = AudioPlayer();
+      _clipPlayer = player;
+
       setState(() {
-        _currentAmplitude = amp;
-        _updateWaveformFromAmplitude(amp);
+        _playingClipId = clip.id;
+        _clipPlaybackProgress = 0.0;
+        _clipPosition = Duration.zero;
+        _clipDuration = Duration(seconds: max(1, clip.durationSecs));
       });
-      await Future.delayed(const Duration(milliseconds: 100));
-    }
 
-    if (mounted) {
-      setState(() {
-        _incomingPttSpeakerCallsign = null;
-        _resetWaveform();
+      await player.setVolume(1.0);
+      await player.play(DeviceFileSource(file.path));
+
+      _clipPosSub = player.onPositionChanged.listen((p) {
+        if (!mounted || _playingClipId != clip.id) return;
+        final totalMs = max(1, _clipDuration.inMilliseconds);
+        final currentMs = p.inMilliseconds.clamp(0, totalMs);
+        setState(() {
+          _clipPosition = p;
+          _clipPlaybackProgress = (currentMs / totalMs).clamp(0.0, 1.0);
+        });
       });
+
+      player.onDurationChanged.listen((d) {
+        if (!mounted || _playingClipId != clip.id) return;
+        setState(() {
+          _clipDuration = d;
+        });
+      });
+
+      _clipCompleteSub = player.onPlayerComplete.listen((_) async {
+        try {
+          await player.stop();
+          await player.dispose();
+        } catch (_) {}
+        if (_clipPlayer == player) {
+          _clipPlayer = null;
+        }
+        if (mounted) {
+          setState(() {
+            _playingClipId = null;
+            _clipPlaybackProgress = 0.0;
+            _clipPosition = Duration.zero;
+          });
+        }
+      });
+    } catch (e) {
+      debugPrint('[CLIP PLAY ERROR] $e');
     }
   }
 
@@ -987,56 +1067,13 @@ class _CallViewState extends State<CallView> {
                   ),
                   const SizedBox(height: 6),
                   SizedBox(
-                    height: 64,
+                    height: 96,
                     child: ListView.builder(
                       scrollDirection: Axis.horizontal,
                       padding: const EdgeInsets.symmetric(horizontal: 16),
                       itemCount: PttAudioService.globalVoiceClips.length,
                       itemBuilder: (ctx, idx) {
-                        final clip = PttAudioService.globalVoiceClips[idx];
-                        return Container(
-                          margin: const EdgeInsets.only(right: 10),
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: clip.isPlayed ? C2Colors.slateCard : Colors.amber.withOpacity(0.2),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: clip.isPlayed ? Colors.white24 : Colors.amberAccent),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(clip.isPlayed ? Icons.play_arrow : Icons.mark_chat_unread, color: clip.isPlayed ? Colors.white70 : Colors.amberAccent, size: 16),
-                              const SizedBox(width: 8),
-                              Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Text('${(clip.audioData.length / 1024).toStringAsFixed(1)} KB • ${clip.senderCallsign}', style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
-                                  Text('${_formatDuration(clip.durationSecs)} • Tap to Play File', style: const TextStyle(color: Colors.white54, fontSize: 9)),
-                                ],
-                              ),
-                              const SizedBox(width: 8),
-                              ElevatedButton(
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.amberAccent,
-                                  foregroundColor: Colors.black,
-                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                  minimumSize: Size.zero,
-                                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                ),
-                                onPressed: () => _playRecordedClip(clip),
-                                child: const Text('PLAY', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10)),
-                              ),
-                              const SizedBox(width: 4),
-                              InkWell(
-                                onTap: () => PttAudioService.deleteClip(clip.id),
-                                child: const Padding(
-                                  padding: EdgeInsets.all(4.0),
-                                  child: Icon(Icons.close, color: Colors.white38, size: 14),
-                                ),
-                              ),
-                            ],
-                          ),
-                        );
+                        return _buildPttClipCard(PttAudioService.globalVoiceClips[idx]);
                       },
                     ),
                   ),
@@ -1245,6 +1282,175 @@ class _CallViewState extends State<CallView> {
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildPttClipCard(PttVoiceClip clip) {
+    final isCurrentPlaying = _playingClipId == clip.id;
+    final progress = isCurrentPlaying ? _clipPlaybackProgress : (clip.isPlayed ? 1.0 : 0.0);
+
+    final amplitudes = clip.amplitudes.isEmpty ? [0.5] : clip.amplitudes;
+    final List<double> barHeights = List.generate(24, (i) {
+      final sampleIdx = ((i / 24) * amplitudes.length).floor().clamp(0, amplitudes.length - 1);
+      final amp = amplitudes[sampleIdx];
+      final wave = 0.2 + 0.8 * (0.6 * amp + 0.4 * sin(i * 0.75).abs());
+      return wave.clamp(0.15, 1.0);
+    });
+
+    return Container(
+      width: 230,
+      margin: const EdgeInsets.only(right: 12),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: isCurrentPlaying
+            ? const Color(0xFF0F2942)
+            : (clip.isPlayed ? C2Colors.slateCard : const Color(0xFF2A2000)),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isCurrentPlaying
+              ? Colors.cyanAccent
+              : (clip.isPlayed ? Colors.white24 : Colors.amberAccent),
+          width: isCurrentPlaying ? 1.5 : 1.0,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    isCurrentPlaying ? Icons.volume_up : (clip.isPlayed ? Icons.history : Icons.mark_chat_unread),
+                    color: isCurrentPlaying ? Colors.cyanAccent : (clip.isPlayed ? Colors.white54 : Colors.amberAccent),
+                    size: 14,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    clip.senderCallsign,
+                    style: TextStyle(
+                      color: isCurrentPlaying ? Colors.cyanAccent : Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+              Row(
+                children: [
+                  Text(
+                    isCurrentPlaying
+                        ? '${_formatDuration(_clipPosition.inSeconds)} / ${_formatDuration(clip.durationSecs)}'
+                        : _formatDuration(clip.durationSecs),
+                    style: TextStyle(
+                      color: isCurrentPlaying ? Colors.cyanAccent : Colors.white54,
+                      fontSize: 9,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  InkWell(
+                    onTap: () => PttAudioService.deleteClip(clip.id),
+                    child: const Icon(Icons.close, color: Colors.white38, size: 14),
+                  ),
+                ],
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 4),
+
+          GestureDetector(
+            onTap: () => _playRecordedClip(clip),
+            child: SizedBox(
+              height: 28,
+              child: Stack(
+                alignment: Alignment.centerLeft,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: List.generate(barHeights.length, (idx) {
+                      final barProgress = idx / barHeights.length;
+                      final isPassed = progress >= barProgress;
+
+                      return AnimatedContainer(
+                        duration: const Duration(milliseconds: 60),
+                        width: 3.5,
+                        height: 28 * barHeights[idx],
+                        decoration: BoxDecoration(
+                          color: isPassed
+                              ? (isCurrentPlaying ? Colors.cyanAccent : C2Colors.emeraldAccent)
+                              : (clip.isPlayed ? Colors.white24 : Colors.amberAccent.withOpacity(0.4)),
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      );
+                    }),
+                  ),
+                  if (isCurrentPlaying)
+                    Positioned(
+                      left: (progress * 200).clamp(0.0, 200.0),
+                      top: 0,
+                      bottom: 0,
+                      child: Container(
+                        width: 2.5,
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(2),
+                          boxShadow: const [
+                            BoxShadow(color: Colors.cyanAccent, blurRadius: 6, spreadRadius: 1),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 4),
+
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                '${(clip.audioData.length / 1024).toStringAsFixed(1)} KB',
+                style: const TextStyle(color: Colors.white38, fontSize: 8),
+              ),
+              InkWell(
+                onTap: () => _playRecordedClip(clip),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: isCurrentPlaying ? Colors.cyanAccent : (clip.isPlayed ? C2Colors.slateCard : Colors.amberAccent),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        isCurrentPlaying ? Icons.pause : Icons.play_arrow,
+                        color: isCurrentPlaying ? Colors.black : (clip.isPlayed ? Colors.white : Colors.black),
+                        size: 12,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        isCurrentPlaying ? 'PAUSE' : 'PLAY FILE',
+                        style: TextStyle(
+                          color: isCurrentPlaying ? Colors.black : (clip.isPlayed ? Colors.white : Colors.black),
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

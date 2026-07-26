@@ -41,6 +41,21 @@ class PttAudioService {
   static final ValueNotifier<double> amplitudeNotifier = ValueNotifier<double>(0.0);
   static Function(PttVoiceClip clip, bool autoPlay)? onClipReceived;
 
+  static AudioPlayer? _activePlayer;
+  static StreamSubscription? _playerCompleteSub;
+
+  static Future<void> stopActivePlayer() async {
+    try {
+      _playerCompleteSub?.cancel();
+      _playerCompleteSub = null;
+      if (_activePlayer != null) {
+        await _activePlayer!.stop();
+        await _activePlayer!.dispose();
+        _activePlayer = null;
+      }
+    } catch (_) {}
+  }
+
   static final Set<String> _processedMessageKeys = {};
   static StreamSubscription? _meshSub;
   static StreamSubscription? _p2pSub;
@@ -174,6 +189,8 @@ class PttAudioService {
   static Future<void> playAudioBytes(Uint8List audioBytes) async {
     if (audioBytes.isEmpty) return;
     try {
+      await stopActivePlayer();
+
       final isWav = audioBytes.length >= 4 &&
           audioBytes[0] == 0x52 && // R
           audioBytes[1] == 0x49 && // I
@@ -190,14 +207,16 @@ class PttAudioService {
       await file.writeAsBytes(audioBytes, flush: true);
 
       final player = AudioPlayer();
+      _activePlayer = player;
+
       await player.setVolume(1.0);
       await player.play(DeviceFileSource(file.path));
 
-      player.onPlayerComplete.listen((_) {
-        player.dispose();
+      _playerCompleteSub = player.onPlayerComplete.listen((_) async {
+        await stopActivePlayer();
       });
 
-      debugPrint('[PTT AUDIO SERVICE] Playing ${audioBytes.length} bytes voice payload ($ext) via standalone AudioPlayer');
+      debugPrint('[PTT AUDIO SERVICE] Playing ${audioBytes.length} bytes voice payload ($ext) via managed AudioPlayer');
     } catch (e) {
       debugPrint('[PTT PLAY ERROR] $e');
       SystemSound.play(SystemSoundType.alert);
@@ -212,6 +231,8 @@ class PttAudioService {
     bool isSquelchChirp = false,
   }) async {
     try {
+      await stopActivePlayer();
+
       final wavBytes = createWavBuffer(
         frequency: frequency,
         amplitude: amplitude,
@@ -227,11 +248,12 @@ class PttAudioService {
       await file.writeAsBytes(wavBytes, flush: true);
 
       final player = AudioPlayer();
+      _activePlayer = player;
       await player.setVolume(1.0);
       await player.play(DeviceFileSource(file.path));
 
-      player.onPlayerComplete.listen((_) {
-        player.dispose();
+      _playerCompleteSub = player.onPlayerComplete.listen((_) async {
+        await stopActivePlayer();
       });
     } catch (_) {
       SystemSound.play(SystemSoundType.alert);
