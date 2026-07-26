@@ -1246,23 +1246,6 @@ class _MainShellViewState extends State<MainShellView> {
       return; // Cannot pair with self
     }
 
-    final isAlreadyPaired = _teamProfiles.any((p) => p.id == newProfile.id);
-    if (isAlreadyPaired) {
-      _showInAppNotification(
-        title: 'ALREADY PAIRED',
-        message: 'Operator ${newProfile.callsign} is already in your squad directory.',
-        color: Colors.cyanAccent,
-      );
-      return;
-    }
-
-    // Only check consumed tokens when initiating a NEW pair request!
-    // Response handshakes (sendPairRequest == false) MUST NOT trigger token reuse security warnings.
-    if (sendPairRequest && tokenId.isNotEmpty && _consumedPairingTokens.contains(tokenId)) {
-      _notifyTokenReuseSecurityAlert(newProfile, tokenId);
-      return;
-    }
-
     if (tokenId.isNotEmpty) {
       _consumedPairingTokens.add(tokenId);
       final prefs = await SharedPreferences.getInstance();
@@ -1270,15 +1253,20 @@ class _MainShellViewState extends State<MainShellView> {
     }
 
     setState(() {
-      final exists = _teamProfiles.any((p) => p.id == newProfile.id);
-      if (!exists) {
+      final existingIdx = _teamProfiles.indexWhere((p) => p.id == newProfile.id || p.callsign.toUpperCase() == newProfile.callsign.toUpperCase());
+      if (existingIdx >= 0) {
+        _teamProfiles[existingIdx] = newProfile;
+      } else {
         _teamProfiles.add(newProfile);
+      }
+
+      if (!_mlsGroupEngine.memberPublicKeys.contains(newProfile.publicKey)) {
         _mlsGroupEngine.memberPublicKeys.add(newProfile.publicKey);
         _mlsGroupEngine.ratchetEpoch();
       }
     });
 
-    _addEventLog('PAIRING COMPLETED', 'Paired with operator ${newProfile.callsign} (${newProfile.name})', EventSeverity.info);
+    _addEventLog('PAIRING HANDSHAKE INITIATED', 'Paired/updated operator ${newProfile.callsign} (${newProfile.id})', EventSeverity.info);
 
     final prefs = await SharedPreferences.getInstance();
     final serializableList = _teamProfiles
@@ -1308,6 +1296,12 @@ class _MainShellViewState extends State<MainShellView> {
       );
       _meshClient.sendMessage(requestMsg);
       _p2pMeshEngine.sendP2PDirectMessage(requestMsg);
+
+      _showInAppNotification(
+        title: 'PAIRING REQUEST TRANSMITTED',
+        message: 'Pairing request sent to ${newProfile.callsign}. Waiting for far-end approval...',
+        color: Colors.cyanAccent,
+      );
     }
   }
 
