@@ -314,6 +314,87 @@ class _MainShellViewState extends State<MainShellView> {
             },
           );
         }
+      } else if (msg.encryptedBody.contains('PAIR_REQUEST')) {
+        try {
+          final Map<String, dynamic> data = jsonDecode(msg.encryptedBody);
+          final tokenId = data['token_id'] ?? '';
+          final applicant = OperatorProfile(
+            id: data['operator_id'] ?? msg.senderId,
+            callsign: data['callsign'] ?? 'OPERATOR',
+            name: data['name'] ?? data['callsign'] ?? 'OPERATOR',
+            role: OperatorRole.operator,
+            avatarBase64: '',
+            publicKey: data['public_key'] ?? '',
+            lastSeen: DateTime.now(),
+            isOnline: true,
+          );
+
+          if (applicant.id == _myProfile.id || msg.senderId == _myProfile.id) {
+            return; // Ignore self-pairing requests
+          }
+
+          // Only present dialog if recipientId matches my ID
+          if (msg.recipientId != null && msg.recipientId!.isNotEmpty && msg.recipientId != _myProfile.id) {
+            return;
+          }
+
+          // If already paired with this operator or dialog active, ignore to prevent loops
+          final isAlreadyPaired = _teamProfiles.any((p) => p.id == applicant.id);
+          if (isAlreadyPaired || _activePairingDialogs.contains(applicant.id)) {
+            return;
+          }
+
+          if (tokenId.isNotEmpty && _consumedPairingTokens.contains(tokenId)) {
+            _notifyTokenReuseSecurityAlert(applicant, tokenId);
+          } else {
+            _showPairingApprovalDialog(applicant, tokenId);
+          }
+        } catch (_) {}
+      } else if (msg.encryptedBody.contains('PAIR_ACK')) {
+        try {
+          final Map<String, dynamic> data = jsonDecode(msg.encryptedBody);
+          final tokenId = data['token_id'] ?? '';
+          final peerProfile = OperatorProfile(
+            id: data['operator_id'] ?? msg.senderId,
+            callsign: data['callsign'] ?? 'OPERATOR',
+            name: data['name'] ?? data['callsign'] ?? 'OPERATOR',
+            role: OperatorRole.operator,
+            avatarBase64: '',
+            publicKey: data['public_key'] ?? '',
+            lastSeen: DateTime.now(),
+            isOnline: true,
+          );
+
+          // Complete pairing locally without re-transmitting
+          _addContactDirectly(peerProfile, tokenId: tokenId, sendPairRequest: false);
+          _showPairingCompletedDialog(peerProfile);
+        } catch (_) {}
+      } else if (msg.encryptedBody.contains('UNPAIR_AND_PURGE')) {
+        if (msg.recipientId != null && msg.recipientId!.isNotEmpty && msg.recipientId != _myProfile.id) {
+          return; // Ignore unpair signals intended for other devices
+        }
+        try {
+          final Map<String, dynamic> data = jsonDecode(msg.encryptedBody);
+          final purgedOpId = data['operator_id'] ?? msg.senderId;
+          final purgedCallsign = data['callsign'] ?? msg.senderId;
+
+          final isPairedWithMe = _teamProfiles.any((p) => p.id == purgedOpId || p.callsign == purgedCallsign);
+          if (isPairedWithMe) {
+            _handleIncomingRemoteUnpair(purgedOpId, purgedCallsign);
+          }
+        } catch (_) {}
+      } else if (msg.encryptedBody.contains('DELIVERY_ACK')) {
+        try {
+          final Map<String, dynamic> data = jsonDecode(msg.encryptedBody);
+          final msgId = data['message_id'];
+          _updateMessageStatus(msgId, MessageStatus.delivered);
+        } catch (_) {}
+      } else if (msg.encryptedBody.contains('READ_ACK')) {
+        try {
+          final Map<String, dynamic> data = jsonDecode(msg.encryptedBody);
+          final msgId = data['message_id'];
+          _updateMessageStatus(msgId, MessageStatus.read);
+        } catch (_) {}
       } else if (msg.type == MessageType.chat1to1 && msg.recipientId == _myProfile.id) {
         final targetPubKey = (msg.senderPublicKey != null && msg.senderPublicKey!.isNotEmpty)
             ? msg.senderPublicKey!
@@ -406,88 +487,7 @@ class _MainShellViewState extends State<MainShellView> {
           );
         }
       } else if (msg.type == MessageType.broadcast) {
-        if (msg.encryptedBody.contains('DELIVERY_ACK')) {
-          try {
-            final Map<String, dynamic> data = jsonDecode(msg.encryptedBody);
-            final msgId = data['message_id'];
-            _updateMessageStatus(msgId, MessageStatus.delivered);
-          } catch (_) {}
-        } else if (msg.encryptedBody.contains('READ_ACK')) {
-          try {
-            final Map<String, dynamic> data = jsonDecode(msg.encryptedBody);
-            final msgId = data['message_id'];
-            _updateMessageStatus(msgId, MessageStatus.read);
-          } catch (_) {}
-        } else if (msg.encryptedBody.contains('UNPAIR_AND_PURGE')) {
-          if (msg.recipientId != null && msg.recipientId!.isNotEmpty && msg.recipientId != _myProfile.id) {
-            return; // Ignore unpair signals intended for other devices
-          }
-          try {
-            final Map<String, dynamic> data = jsonDecode(msg.encryptedBody);
-            final purgedOpId = data['operator_id'] ?? msg.senderId;
-            final purgedCallsign = data['callsign'] ?? msg.senderId;
-
-            final isPairedWithMe = _teamProfiles.any((p) => p.id == purgedOpId || p.callsign == purgedCallsign);
-            if (isPairedWithMe) {
-              _handleIncomingRemoteUnpair(purgedOpId, purgedCallsign);
-            }
-          } catch (_) {}
-        } else if (msg.encryptedBody.contains('PAIR_ACK')) {
-          try {
-            final Map<String, dynamic> data = jsonDecode(msg.encryptedBody);
-            final tokenId = data['token_id'] ?? '';
-            final peerProfile = OperatorProfile(
-              id: data['operator_id'] ?? msg.senderId,
-              callsign: data['callsign'] ?? 'OPERATOR',
-              name: data['name'] ?? data['callsign'] ?? 'OPERATOR',
-              role: OperatorRole.operator,
-              avatarBase64: '',
-              publicKey: data['public_key'] ?? '',
-              lastSeen: DateTime.now(),
-              isOnline: true,
-            );
-
-            // Complete pairing locally without re-transmitting
-            _addContactDirectly(peerProfile, tokenId: tokenId, sendPairRequest: false);
-            _showPairingCompletedDialog(peerProfile);
-          } catch (_) {}
-        } else if (msg.encryptedBody.contains('PAIR_REQUEST')) {
-          try {
-            final Map<String, dynamic> data = jsonDecode(msg.encryptedBody);
-            final tokenId = data['token_id'] ?? '';
-            final applicant = OperatorProfile(
-              id: data['operator_id'] ?? msg.senderId,
-              callsign: data['callsign'] ?? 'OPERATOR',
-              name: data['name'] ?? data['callsign'] ?? 'OPERATOR',
-              role: OperatorRole.operator,
-              avatarBase64: '',
-              publicKey: data['public_key'] ?? '',
-              lastSeen: DateTime.now(),
-              isOnline: true,
-            );
-
-            if (applicant.id == _myProfile.id || msg.senderId == _myProfile.id) {
-              return; // Ignore self-pairing requests
-            }
-
-            // Only present dialog if recipientId matches my ID
-            if (msg.recipientId != null && msg.recipientId!.isNotEmpty && msg.recipientId != _myProfile.id) {
-              return;
-            }
-
-            // If already paired with this operator or dialog active, ignore to prevent loops
-            final isAlreadyPaired = _teamProfiles.any((p) => p.id == applicant.id);
-            if (isAlreadyPaired || _activePairingDialogs.contains(applicant.id)) {
-              return;
-            }
-
-            if (tokenId.isNotEmpty && _consumedPairingTokens.contains(tokenId)) {
-              _notifyTokenReuseSecurityAlert(applicant, tokenId);
-            } else {
-              _showPairingApprovalDialog(applicant, tokenId);
-            }
-          } catch (_) {}
-        } else if (msg.senderId != _myProfile.id) {
+        if (msg.senderId != _myProfile.id) {
           String decrypted = msg.encryptedBody;
           try {
             decrypted = _mlsGroupEngine.decryptGroupMessage(msg.encryptedBody);

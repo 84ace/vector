@@ -60,7 +60,10 @@ class E2EEEngine {
   /// Decrypts ciphertext envelope and verifies HMAC payload integrity.
   String decryptPayload(String encryptedBody, String remotePublicKey) {
     try {
-      debugPrint('[E2EE DECRYPT] Decrypting payload from remotePub=${remotePublicKey.substring(0, 10)}...');
+      if (encryptedBody.trimLeft().startsWith('{') && encryptedBody.contains('"action"')) {
+        return encryptedBody; // Plaintext system control payload
+      }
+      debugPrint('[E2EE DECRYPT] Decrypting payload from remotePub=${remotePublicKey.substring(0, remotePublicKey.length >= 10 ? 10 : remotePublicKey.length)}...');
       final jsonStr = utf8.decode(base64Decode(encryptedBody));
       final Map<String, dynamic> payload = jsonDecode(jsonStr);
 
