@@ -64,9 +64,18 @@ class _CallViewState extends State<CallView> {
   OperatorProfile? _selectedPeer;
   bool _isPttPressed = false;
   bool _autoPlayPtt = false;
-  PttCodecProfile _codecProfile = PttCodecProfile.standard;
+  PttCodecProfile _codecProfile = PttCodecProfile.narrowband;
   String? _incomingPttSpeakerCallsign;
   double _currentAmplitude = 0.0;
+
+  // Full-Duplex Voice/Video Call State
+  bool _isInActiveCall = false;
+  bool _isCallConnected = false;
+  bool _isVideoCall = false;
+  bool _isMuted = false;
+  bool _isCameraOff = false;
+  int _callDurationSecs = 0;
+  Timer? _callTimer;
 
   bool _isTestingMic = false;
   String _micTestStatus = '';
@@ -74,14 +83,6 @@ class _CallViewState extends State<CallView> {
   Timer? _pttAudioStreamTimer;
   Timer? _voiceCallStreamTimer;
   final List<double> _audioWaveform = List.generate(28, (_) => 0.05);
-
-  // Full-Duplex Voice/Video Call State
-  bool _isInActiveCall = false;
-  bool _isVideoCall = false;
-  bool _isMuted = false;
-  bool _isCameraOff = false;
-  int _callDurationSecs = 0;
-  Timer? _callTimer;
 
   @override
   void initState() {
@@ -113,14 +114,24 @@ class _CallViewState extends State<CallView> {
 
       if (body.contains('CALL_VOICE_STREAM')) {
         try {
-          final Map<String, dynamic> data = jsonDecode(body.replaceFirst('CALL_VOICE_STREAM:', ''));
+          final prefix = body.contains('CALL_VOICE_STREAM:') ? 'CALL_VOICE_STREAM:' : '';
+          final jsonStr = prefix.isNotEmpty ? body.replaceFirst(prefix, '') : body;
+          final Map<String, dynamic> data = jsonDecode(jsonStr);
           final amp = (data['amplitude'] as num?)?.toDouble() ?? 0.5;
+          final audioBase64 = data['audio_base64'] as String?;
 
-          if (_isInActiveCall && !_isMuted) {
+          if (_isInActiveCall) {
             setState(() {
               _currentAmplitude = amp;
               _updateWaveformFromAmplitude(amp);
             });
+
+            if (audioBase64 != null && audioBase64.isNotEmpty) {
+              final pcmBytes = base64Decode(audioBase64);
+              if (pcmBytes.isNotEmpty) {
+                PttAudioService.playAudioBytes(pcmBytes);
+              }
+            }
           }
         } catch (_) {}
       } else if (body.contains('CALL_ACCEPT')) {
@@ -131,6 +142,7 @@ class _CallViewState extends State<CallView> {
         setState(() {
           _selectedPeer = sender;
           _isInActiveCall = true;
+          _isCallConnected = true;
           _callDurationSecs = 0;
         });
         _startCallDurationTimer();
@@ -284,7 +296,7 @@ class _CallViewState extends State<CallView> {
 
     while (_isInActiveCall && mounted) {
       if (_isMuted) {
-        await Future.delayed(const Duration(milliseconds: 300));
+        await Future.delayed(const Duration(milliseconds: 200));
         continue;
       }
 
@@ -301,7 +313,7 @@ class _CallViewState extends State<CallView> {
         if (!hasPerm || !_isInActiveCall || _isMuted || !mounted) {
           await recorder.dispose();
           _voiceCallRecorder = null;
-          await Future.delayed(const Duration(milliseconds: 400));
+          await Future.delayed(const Duration(milliseconds: 250));
           continue;
         }
 
@@ -310,8 +322,8 @@ class _CallViewState extends State<CallView> {
 
         await recorder.start(_currentRecordConfig, path: chunkPath);
 
-        // Record 1.2 seconds of hardware mic voice audio per chunk
-        await Future.delayed(const Duration(milliseconds: 1200));
+        // Record 600ms hardware mic voice audio per chunk for low-latency continuous stream
+        await Future.delayed(const Duration(milliseconds: 600));
 
         if (!_isInActiveCall || !mounted) {
           try {
@@ -333,7 +345,7 @@ class _CallViewState extends State<CallView> {
             File(targetPath).deleteSync();
           } catch (_) {}
 
-          if (audioBytes.length > 100 && _isInActiveCall && !_isMuted && mounted) {
+          if (audioBytes.length > 80 && _isInActiveCall && !_isMuted && mounted) {
             final payload = jsonEncode({
               'action': 'CALL_VOICE_STREAM',
               'amplitude': 0.75,
@@ -342,7 +354,7 @@ class _CallViewState extends State<CallView> {
             });
 
             _sendCallSignal('CALL_VOICE_STREAM:$payload');
-            debugPrint('[VOICE CALL TX] Transmitted ${audioBytes.length} bytes microphone audio chunk');
+            debugPrint('[VOICE CALL TX] Transmitted ${audioBytes.length} bytes continuous audio chunk');
           }
         }
       } catch (e) {
@@ -351,7 +363,7 @@ class _CallViewState extends State<CallView> {
           await recorder.dispose();
         } catch (_) {}
         _voiceCallRecorder = null;
-        await Future.delayed(const Duration(milliseconds: 500));
+        await Future.delayed(const Duration(milliseconds: 200));
       }
     }
 
@@ -1363,9 +1375,11 @@ class _CallViewState extends State<CallView> {
                           ),
                           const SizedBox(width: 8),
                           Text(
-                            _isMuted ? 'YOUR MIC IS MUTED' : 'FULL DUPLEX AUDIO CONNECTED',
+                            _isMuted
+                                ? 'YOUR MIC IS MUTED'
+                                : (_isCallConnected ? 'FULL DUPLEX AUDIO CONNECTED' : 'CALLING ${_selectedPeer?.callsign ?? "TARGET"}...'),
                             style: TextStyle(
-                              color: _isMuted ? Colors.redAccent : C2Colors.emeraldAccent,
+                              color: _isMuted ? Colors.redAccent : (_isCallConnected ? C2Colors.emeraldAccent : Colors.amberAccent),
                               fontSize: 11,
                               fontWeight: FontWeight.bold,
                             ),
