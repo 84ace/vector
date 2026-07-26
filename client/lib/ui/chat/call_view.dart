@@ -765,18 +765,17 @@ class _CallViewState extends State<CallView> {
                   padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
                   color: C2Colors.emeraldAccent.withOpacity(0.15),
                   child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Row(
-                        children: [
-                          Icon(Icons.verified_user, color: C2Colors.emeraldAccent, size: 13),
-                          SizedBox(width: 6),
-                          Text(
-                            'WebRTC Hardware Mic Recording Active (Spacebar / Hold)',
-                            style: TextStyle(color: C2Colors.emeraldAccent, fontSize: 10, fontWeight: FontWeight.bold),
-                          ),
-                        ],
+                      const Icon(Icons.verified_user, color: C2Colors.emeraldAccent, size: 13),
+                      const SizedBox(width: 6),
+                      const Expanded(
+                        child: Text(
+                          'WebRTC Mic Active (Spacebar / Hold)',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(color: C2Colors.emeraldAccent, fontSize: 10, fontWeight: FontWeight.bold),
+                        ),
                       ),
+                      const SizedBox(width: 6),
                       ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.cyanAccent,
@@ -819,14 +818,17 @@ class _CallViewState extends State<CallView> {
                         style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8),
                       ),
                       const SizedBox(height: 6),
-                      Row(
-                        children: [
-                          _buildScopeChip(PttTargetScope.direct, 'DIRECT 1:1', Icons.person),
-                          const SizedBox(width: 8),
-                          _buildScopeChip(PttTargetScope.group, 'SQUAD GROUP', Icons.groups),
-                          const SizedBox(width: 8),
-                          _buildScopeChip(PttTargetScope.broadcast, 'BROADCAST', Icons.campaign),
-                        ],
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            _buildScopeChip(PttTargetScope.direct, 'DIRECT 1:1', Icons.person),
+                            const SizedBox(width: 8),
+                            _buildScopeChip(PttTargetScope.group, 'SQUAD GROUP', Icons.groups),
+                            const SizedBox(width: 8),
+                            _buildScopeChip(PttTargetScope.broadcast, 'BROADCAST', Icons.campaign),
+                          ],
+                        ),
                       ),
                     ],
                   ),
@@ -839,74 +841,64 @@ class _CallViewState extends State<CallView> {
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   child: Column(
                     children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Row(
-                            children: [
-                              Icon(Icons.tune, color: Colors.cyanAccent, size: 14),
-                              SizedBox(width: 6),
-                              Text(
-                                'PTT RECEPTION MODE',
-                                style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.5),
-                              ),
-                            ],
-                          ),
-                          Row(
-                            children: [
-                              ChoiceChip(
-                                label: const Text('AUTO-PLAY LIVE', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
-                                selected: _autoPlayPtt,
-                                selectedColor: C2Colors.emeraldAccent,
-                                labelStyle: TextStyle(color: _autoPlayPtt ? Colors.black : Colors.white70),
-                                onSelected: (val) => _saveAutoPlaySetting(true),
-                              ),
-                              const SizedBox(width: 6),
-                              ChoiceChip(
-                                label: const Text('PLAY LATER', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
-                                selected: !_autoPlayPtt,
-                                selectedColor: Colors.amberAccent,
-                                labelStyle: TextStyle(color: !_autoPlayPtt ? Colors.black : Colors.white70),
-                                onSelected: (val) => _saveAutoPlaySetting(false),
-                              ),
-                            ],
-                          ),
-                        ],
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            const Icon(Icons.tune, color: Colors.cyanAccent, size: 14),
+                            const SizedBox(width: 6),
+                            const Text(
+                              'PTT RECEPTION MODE',
+                              style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.5),
+                            ),
+                            const SizedBox(width: 12),
+                            ChoiceChip(
+                              label: const Text('AUTO-PLAY LIVE', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
+                              selected: _autoPlayPtt,
+                              selectedColor: C2Colors.emeraldAccent,
+                              labelStyle: TextStyle(color: _autoPlayPtt ? Colors.black : Colors.white70),
+                              onSelected: (val) => _saveAutoPlaySetting(true),
+                            ),
+                            const SizedBox(width: 6),
+                            ChoiceChip(
+                              label: const Text('PLAY LATER', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
+                              selected: !_autoPlayPtt,
+                              selectedColor: Colors.amberAccent,
+                              labelStyle: TextStyle(color: !_autoPlayPtt ? Colors.black : Colors.white70),
+                              onSelected: (val) => _saveAutoPlaySetting(false),
+                            ),
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 8),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Row(
-                            children: [
-                              Icon(Icons.compress, color: Colors.cyanAccent, size: 14),
-                              SizedBox(width: 6),
-                              Text(
-                                'AUDIO CODEC PROFILE',
-                                style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.5),
-                              ),
-                            ],
-                          ),
-                          Row(
-                            children: [
-                              ChoiceChip(
-                                label: const Text('STANDARD (24 kbps)', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
-                                selected: !_useNarrowbandCompression,
-                                selectedColor: C2Colors.emeraldAccent,
-                                labelStyle: TextStyle(color: !_useNarrowbandCompression ? Colors.black : Colors.white70),
-                                onSelected: (val) => _saveCompressionSetting(false),
-                              ),
-                              const SizedBox(width: 6),
-                              ChoiceChip(
-                                label: const Text('HIGH COMPRESSION (12 kbps)', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
-                                selected: _useNarrowbandCompression,
-                                selectedColor: Colors.amberAccent,
-                                labelStyle: TextStyle(color: _useNarrowbandCompression ? Colors.black : Colors.white70),
-                                onSelected: (val) => _saveCompressionSetting(true),
-                              ),
-                            ],
-                          ),
-                        ],
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            const Icon(Icons.compress, color: Colors.cyanAccent, size: 14),
+                            const SizedBox(width: 6),
+                            const Text(
+                              'AUDIO CODEC PROFILE',
+                              style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.5),
+                            ),
+                            const SizedBox(width: 12),
+                            ChoiceChip(
+                              label: const Text('STANDARD (24 kbps)', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
+                              selected: !_useNarrowbandCompression,
+                              selectedColor: C2Colors.emeraldAccent,
+                              labelStyle: TextStyle(color: !_useNarrowbandCompression ? Colors.black : Colors.white70),
+                              onSelected: (val) => _saveCompressionSetting(false),
+                            ),
+                            const SizedBox(width: 6),
+                            ChoiceChip(
+                              label: const Text('HIGH COMPRESSION (12 kbps)', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold)),
+                              selected: _useNarrowbandCompression,
+                              selectedColor: Colors.amberAccent,
+                              labelStyle: TextStyle(color: _useNarrowbandCompression ? Colors.black : Colors.white70),
+                              onSelected: (val) => _saveCompressionSetting(true),
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
