@@ -45,6 +45,12 @@ class CallView extends StatefulWidget {
   State<CallView> createState() => _CallViewState();
 }
 
+enum PttCodecProfile {
+  narrowband, // 12 kbps, 16 kHz sample rate, 8 kHz audio bandwidth (~1.5 KB/s)
+  standard,   // 24 kbps, 22.05 kHz sample rate, 11 kHz audio bandwidth (~3.0 KB/s)
+  wideband,   // 64 kbps, 48 kHz sample rate, 24 kHz audio bandwidth (~8.0 KB/s)
+}
+
 class _CallViewState extends State<CallView> {
   // Fresh Instance Hardware Audio Recorders
   AudioRecorder? _pttRecorder;
@@ -57,8 +63,8 @@ class _CallViewState extends State<CallView> {
   PttTargetScope _pttScope = PttTargetScope.direct;
   OperatorProfile? _selectedPeer;
   bool _isPttPressed = false;
-  bool _autoPlayPtt = true;
-  bool _useNarrowbandCompression = false; // false = Standard (24 kbps), true = High Compression / Narrowband (12 kbps)
+  bool _autoPlayPtt = false;
+  PttCodecProfile _codecProfile = PttCodecProfile.standard;
   String? _incomingPttSpeakerCallsign;
   double _currentAmplitude = 0.0;
 
@@ -158,12 +164,16 @@ class _CallViewState extends State<CallView> {
   }
 
   RecordConfig get _currentRecordConfig {
-    if (_useNarrowbandCompression) {
-      // High Compression / Narrowband Profile: 16 kHz @ 12 kbps mono AAC LC (~1.5 KB/s)
-      return const RecordConfig(encoder: AudioEncoder.aacLc, sampleRate: 16000, bitRate: 12000, numChannels: 1);
-    } else {
-      // Standard Voice Profile: 22.05 kHz @ 24 kbps mono AAC LC (~3.0 KB/s)
-      return const RecordConfig(encoder: AudioEncoder.aacLc, sampleRate: 22050, bitRate: 24000, numChannels: 1);
+    switch (_codecProfile) {
+      case PttCodecProfile.narrowband:
+        // Narrowband Profile: 12 kbps @ 16 kHz mono (8 kHz Audio Bandwidth, ~1.5 KB/s)
+        return const RecordConfig(encoder: AudioEncoder.aacLc, sampleRate: 16000, bitRate: 12000, numChannels: 1);
+      case PttCodecProfile.wideband:
+        // Wideband HD Profile: 64 kbps @ 48 kHz mono (24 kHz Audio Bandwidth, ~8.0 KB/s)
+        return const RecordConfig(encoder: AudioEncoder.aacLc, sampleRate: 48000, bitRate: 64000, numChannels: 1);
+      case PttCodecProfile.standard:
+        // Standard Profile: 24 kbps @ 22.05 kHz mono (11 kHz Audio Bandwidth, ~3.0 KB/s)
+        return const RecordConfig(encoder: AudioEncoder.aacLc, sampleRate: 22050, bitRate: 24000, numChannels: 1);
     }
   }
 
@@ -191,9 +201,16 @@ class _CallViewState extends State<CallView> {
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
+    final codecName = prefs.getString('ptt_codec_profile') ?? 'standard';
     setState(() {
-      _autoPlayPtt = prefs.getBool('auto_play_ptt') ?? true;
-      _useNarrowbandCompression = prefs.getBool('ptt_narrowband_compression') ?? false;
+      _autoPlayPtt = prefs.getBool('auto_play_ptt') ?? false;
+      if (codecName == 'narrowband') {
+        _codecProfile = PttCodecProfile.narrowband;
+      } else if (codecName == 'wideband') {
+        _codecProfile = PttCodecProfile.wideband;
+      } else {
+        _codecProfile = PttCodecProfile.standard;
+      }
     });
   }
 
@@ -206,12 +223,12 @@ class _CallViewState extends State<CallView> {
     });
   }
 
-  Future<void> _saveCompressionSetting(bool val) async {
+  Future<void> _saveCodecProfile(PttCodecProfile profile) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('ptt_narrowband_compression', val);
+    await prefs.setString('ptt_codec_profile', profile.name);
     if (!mounted) return;
     setState(() {
-      _useNarrowbandCompression = val;
+      _codecProfile = profile;
     });
   }
 
@@ -1096,7 +1113,7 @@ class _CallViewState extends State<CallView> {
                         children: [
                           Text(
                             _isPttPressed
-                                ? 'TX MIC (${_useNarrowbandCompression ? "12kbps NARROWBAND" : "24kbps STANDARD"})'
+                                ? 'TX MIC (${_codecProfile == PttCodecProfile.narrowband ? "12 kbps • 8 kHz BW" : (_codecProfile == PttCodecProfile.wideband ? "64 kbps HD • 24 kHz BW" : "24 kbps • 11 kHz BW")})'
                                 : (_incomingPttSpeakerCallsign != null ? 'RX AUDIO STREAM ACTIVE' : 'REAL HARDWARE MIC SPECTRUM'),
                             style: TextStyle(
                               color: _isPttPressed || _incomingPttSpeakerCallsign != null ? C2Colors.emeraldAccent : Colors.white38,
@@ -1531,35 +1548,77 @@ class _CallViewState extends State<CallView> {
                   ),
                   const SizedBox(height: 16),
 
-                  // Audio Codec Profile
-                  const Text('AUDIO CODEC PROFILE', style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                  // Audio Codec Profile & Bandwidth
+                  const Text('AUDIO CODEC & BANDWIDTH PROFILE', style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold)),
                   const SizedBox(height: 6),
-                  Row(
-                    children: [
-                      ChoiceChip(
-                        label: const Text('STANDARD (24 kbps)', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
-                        selected: !_useNarrowbandCompression,
-                        selectedColor: C2Colors.emeraldAccent,
-                        labelStyle: TextStyle(color: !_useNarrowbandCompression ? Colors.black : Colors.white70),
-                        onSelected: (val) {
-                          _saveCompressionSetting(false);
-                          setModalState(() {});
-                          setState(() {});
-                        },
-                      ),
-                      const SizedBox(width: 8),
-                      ChoiceChip(
-                        label: const Text('HIGH COMPRESSION (12 kbps)', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
-                        selected: _useNarrowbandCompression,
-                        selectedColor: Colors.amberAccent,
-                        labelStyle: TextStyle(color: _useNarrowbandCompression ? Colors.black : Colors.white70),
-                        onSelected: (val) {
-                          _saveCompressionSetting(true);
-                          setModalState(() {});
-                          setState(() {});
-                        },
-                      ),
-                    ],
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        ChoiceChip(
+                          label: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2.0),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: const [
+                                Text('NARROWBAND', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                                Text('12 kbps | 8 kHz BW (~1.5 KB/s)', style: TextStyle(fontSize: 8)),
+                              ],
+                            ),
+                          ),
+                          selected: _codecProfile == PttCodecProfile.narrowband,
+                          selectedColor: Colors.amberAccent,
+                          labelStyle: TextStyle(color: _codecProfile == PttCodecProfile.narrowband ? Colors.black : Colors.white70),
+                          onSelected: (val) {
+                            _saveCodecProfile(PttCodecProfile.narrowband);
+                            setModalState(() {});
+                            setState(() {});
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                        ChoiceChip(
+                          label: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2.0),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: const [
+                                Text('STANDARD VOICE', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                                Text('24 kbps | 11 kHz BW (~3.0 KB/s)', style: TextStyle(fontSize: 8)),
+                              ],
+                            ),
+                          ),
+                          selected: _codecProfile == PttCodecProfile.standard,
+                          selectedColor: C2Colors.emeraldAccent,
+                          labelStyle: TextStyle(color: _codecProfile == PttCodecProfile.standard ? Colors.black : Colors.white70),
+                          onSelected: (val) {
+                            _saveCodecProfile(PttCodecProfile.standard);
+                            setModalState(() {});
+                            setState(() {});
+                          },
+                        ),
+                        const SizedBox(width: 8),
+                        ChoiceChip(
+                          label: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2.0),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: const [
+                                Text('WIDEBAND HD', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                                Text('64 kbps | 24 kHz BW (~8.0 KB/s)', style: TextStyle(fontSize: 8)),
+                              ],
+                            ),
+                          ),
+                          selected: _codecProfile == PttCodecProfile.wideband,
+                          selectedColor: Colors.purpleAccent,
+                          labelStyle: TextStyle(color: _codecProfile == PttCodecProfile.wideband ? Colors.black : Colors.white70),
+                          onSelected: (val) {
+                            _saveCodecProfile(PttCodecProfile.wideband);
+                            setModalState(() {});
+                            setState(() {});
+                          },
+                        ),
+                      ],
+                    ),
                   ),
                   const SizedBox(height: 20),
                 ],
