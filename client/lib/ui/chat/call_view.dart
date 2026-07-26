@@ -859,6 +859,9 @@ class _CallViewState extends State<CallView> {
   @override
   Widget build(BuildContext context) {
     if (_isInActiveCall) {
+      if (!_isCallConnected) {
+        return _buildCallingScreen();
+      }
       return _buildActiveCallScreen();
     }
 
@@ -1511,6 +1514,103 @@ class _CallViewState extends State<CallView> {
           });
         }
       },
+    );
+  }
+
+  Widget _buildCallingScreen() {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0F172A),
+      body: SafeArea(
+        child: Column(
+          children: [
+            const SizedBox(height: 32),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.cyan.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.cyanAccent.withOpacity(0.4)),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.lock, color: Colors.cyanAccent, size: 12),
+                  SizedBox(width: 6),
+                  Text('END-TO-END ENCRYPTED P2P VOICE CALL', style: TextStyle(color: Colors.cyanAccent, fontSize: 10, fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ),
+
+            Expanded(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    width: 130,
+                    height: 130,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: const Color(0xFF1E293B),
+                      border: Border.all(color: Colors.amberAccent, width: 3),
+                      boxShadow: const [
+                        BoxShadow(color: Colors.amberAccent, blurRadius: 25, spreadRadius: 4),
+                      ],
+                    ),
+                    child: Center(
+                      child: Text(
+                        _selectedPeer?.callsign.substring(0, min(2, _selectedPeer?.callsign.length ?? 2)) ?? 'OP',
+                        style: const TextStyle(color: Colors.amberAccent, fontSize: 40, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Text(
+                    _selectedPeer?.callsign ?? 'OPERATOR',
+                    style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold),
+                  ),
+                  Text(
+                    _selectedPeer?.name ?? '',
+                    style: const TextStyle(color: Colors.white54, fontSize: 13),
+                  ),
+                  const SizedBox(height: 16),
+                  const Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.amberAccent),
+                      ),
+                      SizedBox(width: 10),
+                      Text(
+                        'CALLING... WAITING FOR ANSWER',
+                        style: TextStyle(color: Colors.amberAccent, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.8),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+
+            Container(
+              padding: const EdgeInsets.only(bottom: 40),
+              child: Column(
+                children: [
+                  FloatingActionButton.large(
+                    heroTag: 'cancelCallFab',
+                    onPressed: () => _endCall(transmit: true),
+                    backgroundColor: Colors.red,
+                    foregroundColor: Colors.white,
+                    child: const Icon(Icons.call_end, size: 36),
+                  ),
+                  const SizedBox(height: 10),
+                  const Text('CANCEL CALL', style: TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

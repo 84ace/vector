@@ -1109,6 +1109,8 @@ class _MainShellViewState extends State<MainShellView> {
                   onPressed: () {
                     Navigator.pop(ctx);
                     setState(() {
+                      _activeCallPeer = peer;
+                      _isCallActive = true;
                       _currentIndex = 2;
                     });
                   },
@@ -1129,6 +1131,8 @@ class _MainShellViewState extends State<MainShellView> {
                   onPressed: () {
                     Navigator.pop(ctx);
                     setState(() {
+                      _activeCallPeer = peer;
+                      _isCallActive = true;
                       _currentIndex = 2;
                     });
                   },
