@@ -433,7 +433,7 @@ class _MainShellViewState extends State<MainShellView> {
             final peerProfile = OperatorProfile(
               id: data['operator_id'] ?? msg.senderId,
               callsign: data['callsign'] ?? 'OPERATOR',
-              name: data['name'] ?? 'Squad Member',
+              name: data['name'] ?? data['callsign'] ?? 'OPERATOR',
               role: OperatorRole.operator,
               avatarBase64: '',
               publicKey: data['public_key'] ?? '',
@@ -441,14 +441,9 @@ class _MainShellViewState extends State<MainShellView> {
               isOnline: true,
             );
 
-            // If already paired with this operator, ignore duplicate ACK
-            final isAlreadyPaired = _teamProfiles.any((p) => p.id == peerProfile.id);
-            if (isAlreadyPaired) {
-              return;
-            }
-
             // Complete pairing locally without re-transmitting
             _addContactDirectly(peerProfile, tokenId: tokenId, sendPairRequest: false);
+            _showPairingCompletedDialog(peerProfile);
           } catch (_) {}
         } else if (msg.encryptedBody.contains('PAIR_REQUEST')) {
           try {
@@ -457,7 +452,7 @@ class _MainShellViewState extends State<MainShellView> {
             final applicant = OperatorProfile(
               id: data['operator_id'] ?? msg.senderId,
               callsign: data['callsign'] ?? 'OPERATOR',
-              name: data['name'] ?? 'Squad Member',
+              name: data['name'] ?? data['callsign'] ?? 'OPERATOR',
               role: OperatorRole.operator,
               avatarBase64: '',
               publicKey: data['public_key'] ?? '',
@@ -467,6 +462,11 @@ class _MainShellViewState extends State<MainShellView> {
 
             if (applicant.id == _myProfile.id || msg.senderId == _myProfile.id) {
               return; // Ignore self-pairing requests
+            }
+
+            // Only present dialog if recipientId matches my ID
+            if (msg.recipientId != null && msg.recipientId!.isNotEmpty && msg.recipientId != _myProfile.id) {
+              return;
             }
 
             // If already paired with this operator or dialog active, ignore to prevent loops
@@ -845,7 +845,7 @@ class _MainShellViewState extends State<MainShellView> {
       };
       final requestMsg = C2Message(
         id: 'pair-ack-${DateTime.now().millisecondsSinceEpoch}',
-        type: MessageType.broadcast,
+        type: MessageType.chat1to1,
         senderId: _myProfile.id,
         senderPublicKey: _myProfile.publicKey,
         recipientId: newProfile.id,
@@ -980,7 +980,7 @@ class _MainShellViewState extends State<MainShellView> {
               };
               final ackMsg = C2Message(
                 id: 'pair-ack-${DateTime.now().millisecondsSinceEpoch}',
-                type: MessageType.broadcast,
+                type: MessageType.chat1to1,
                 senderId: _myProfile.id,
                 senderPublicKey: _myProfile.publicKey,
                 recipientId: applicant.id,
@@ -990,12 +990,132 @@ class _MainShellViewState extends State<MainShellView> {
               );
               _meshClient.sendMessage(ackMsg);
               _p2pMeshEngine.sendP2PDirectMessage(ackMsg);
+
+              _showPairingCompletedDialog(applicant);
             },
             child: const Text('APPROVE & PAIR', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
       ),
     ).then((_) => _activePairingDialogs.remove(applicant.id));
+  }
+
+  void _showPairingCompletedDialog(OperatorProfile peer) {
+    if (!mounted) return;
+
+    _triggerAudibleAndHapticAlert();
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: C2Colors.slateCard,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+            side: const BorderSide(color: C2Colors.emeraldAccent, width: 2),
+          ),
+          title: Row(
+            children: [
+              const Icon(Icons.check_circle, color: C2Colors.emeraldAccent, size: 28),
+              const SizedBox(width: 10),
+              const Text(
+                'PAIRING COMPLETED',
+                style: TextStyle(
+                  color: C2Colors.emeraldAccent,
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.0,
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Operator ${peer.callsign} is now verified and added to your squad contacts.',
+                style: const TextStyle(color: Colors.white, fontSize: 13),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Test communications with ${peer.callsign}:',
+                style: const TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 14),
+
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.cyan,
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  icon: const Icon(Icons.chat, size: 18),
+                  label: const Text('TEST TEXT CHAT', style: TextStyle(fontWeight: FontWeight.bold)),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    setState(() {
+                      _activeChatPeer = peer;
+                      _activeChatSubTab = 0;
+                      _currentIndex = 1;
+                    });
+                  },
+                ),
+              ),
+              const SizedBox(height: 8),
+
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: C2Colors.emeraldAccent,
+                    foregroundColor: Colors.black,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  icon: const Icon(Icons.phone, size: 18),
+                  label: const Text('TEST VOICE CALL', style: TextStyle(fontWeight: FontWeight.bold)),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    setState(() {
+                      _currentIndex = 2;
+                    });
+                  },
+                ),
+              ),
+              const SizedBox(height: 8),
+
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.purpleAccent,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  icon: const Icon(Icons.videocam, size: 18),
+                  label: const Text('TEST VIDEO CALL', style: TextStyle(fontWeight: FontWeight.bold)),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    setState(() {
+                      _currentIndex = 2;
+                    });
+                  },
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('DONE / RETURN TO MAP', style: TextStyle(color: Colors.white54, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void _showIncomingCallAlert(OperatorProfile peer, {required bool isVideo}) {
@@ -1172,7 +1292,7 @@ class _MainShellViewState extends State<MainShellView> {
       };
       final requestMsg = C2Message(
         id: 'pair-${DateTime.now().millisecondsSinceEpoch}',
-        type: MessageType.broadcast,
+        type: MessageType.chat1to1,
         senderId: _myProfile.id,
         senderPublicKey: _myProfile.publicKey,
         recipientId: newProfile.id,
