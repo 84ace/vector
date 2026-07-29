@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +19,9 @@ import (
 func main() {
 	portFlag := flag.Int("port", 0, "Port for the HTTP/WebSocket node server")
 	nodeIDFlag := flag.String("node-id", "", "Unique Node ID (defaults to hostname-port)")
+	tlsCertFlag := flag.String("tls-cert", "", "Path to TLS certificate (enables HTTPS/WSS)")
+	tlsKeyFlag := flag.String("tls-key", "", "Path to TLS private key")
+	originsFlag := flag.String("allowed-origins", "", "Comma-separated browser origins permitted to open WebSockets")
 	flag.Parse()
 
 	port := *portFlag
@@ -45,51 +49,81 @@ func main() {
 		nodeID = fmt.Sprintf("%s-%d", hostname, port)
 	}
 
+	tlsCert := firstNonEmpty(*tlsCertFlag, os.Getenv("TLS_CERT_FILE"))
+	tlsKey := firstNonEmpty(*tlsKeyFlag, os.Getenv("TLS_KEY_FILE"))
+	tlsEnabled := tlsCert != "" && tlsKey != ""
+
+	var allowedOrigins []string
+	if raw := firstNonEmpty(*originsFlag, os.Getenv("ALLOWED_ORIGINS")); raw != "" {
+		for _, o := range strings.Split(raw, ",") {
+			if trimmed := strings.TrimSpace(o); trimmed != "" {
+				allowedOrigins = append(allowedOrigins, trimmed)
+			}
+		}
+	}
+
+	transport := "ws:// (PLAINTEXT)"
+	if tlsEnabled {
+		transport = "wss:// (TLS)"
+	}
+
 	log.Printf("==================================================")
-	log.Printf("  TACTICAL C2 DECENTRALIZED MESH BACKEND NODE    ")
+	log.Printf("  VECTOR C2 MESH RELAY NODE                       ")
 	log.Printf("==================================================")
 	log.Printf("  Node ID   : %s", nodeID)
 	log.Printf("  Listen    : :%d", port)
-	log.Printf("  Mode      : Zero-Knowledge Mesh Relay + mDNS Discovery")
+	log.Printf("  Transport : %s", transport)
+	log.Printf("  Auth      : Ed25519 challenge/response per connection")
+	log.Printf("  Payloads  : Opaque to this node (client-side E2EE)")
 	log.Printf("==================================================")
 
-	meshNode := mesh.NewMeshNode(nodeID, port)
-	relayServer := relay.NewRelayServer()
+	if !tlsEnabled {
+		log.Printf("[NODE] WARNING: TLS is not configured. Envelope bodies stay encrypted,")
+		log.Printf("[NODE] WARNING: but routing metadata is exposed to the network path.")
+		log.Printf("[NODE] WARNING: Set TLS_CERT_FILE and TLS_KEY_FILE before any real use.")
+	}
 
-	// HTTP routes
+	meshNode := mesh.NewMeshNode(nodeID, port)
+	relayServer := relay.NewRelayServer(allowedOrigins)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ping", meshNode.PingHandler)
 	mux.HandleFunc("/peers", meshNode.PeersHandler)
+	mux.HandleFunc("/announce", meshNode.AnnounceHandler)
 	mux.HandleFunc("/ws", relayServer.HandleWS)
-
-	// Health check route
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("OK"))
 	})
 
 	server := &http.Server{
-		Addr:         fmt.Sprintf(":%d", port),
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
+		Addr:              fmt.Sprintf(":%d", port),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		// No ReadTimeout/WriteTimeout: they would apply to the hijacked
+		// WebSocket connections too and sever long-lived field sessions. The
+		// relay applies its own per-frame deadlines and a ping/pong keepalive.
+		IdleTimeout: 120 * time.Second,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Launch local network peer discovery listener
-	go meshNode.StartDiscoveryListener(ctx)
+	go meshNode.StartPeerReaper(ctx)
 
-	// Launch HTTP/WebSocket server in goroutine
 	go func() {
-		log.Printf("[NODE] Server listening on http://0.0.0.0:%d", port)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("[NODE] Server listening on :%d", port)
+		var err error
+		if tlsEnabled {
+			err = server.ListenAndServeTLS(tlsCert, tlsKey)
+		} else {
+			err = server.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			log.Fatalf("[NODE] Server error: %v", err)
 		}
 	}()
 
-	// Graceful shutdown handling
 	stopChan := make(chan os.Signal, 1)
 	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
 
@@ -99,9 +133,19 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 
+	relayServer.Shutdown()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		log.Printf("[NODE] Shutdown error: %v", err)
 	}
 
 	log.Printf("[NODE] Mesh node offline.")
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }

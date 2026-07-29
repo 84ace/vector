@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter analyze)",
+      "Bash(flutter analyze *)",
+      "Bash(flutter test)",
+      "Bash(flutter test *)",
+      "Bash(flutter devices)",
+      "Bash(go test *)",
+      "Bash(go vet *)",
+      "Bash(gofmt -l *)",
+      "Bash(codesign -d *)",
+      "Bash(xcrun simctl list *)"
+    ]
+  }
+}

@@ -14,5 +14,14 @@
 	<true/>
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
+	<key>com.apple.security.device.camera</key>
+	<true/>
+	<!-- A sandboxed app has no keychain identity unless it declares an access
+	     group. Without this the first launch fails with -34018 while generating
+	     the identity keypair. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.tactical.c2.vectorC2</string>
+	</array>
 </dict>
 </plist>

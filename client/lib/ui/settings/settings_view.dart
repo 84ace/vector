@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../../models/operator_profile.dart';
 import '../../models/c2_event_log.dart';
-import '../../crypto/e2ee_engine.dart';
 import '../theme/c2_colors.dart';
 
 class SettingsView extends StatefulWidget {
@@ -38,7 +37,7 @@ class _SettingsViewState extends State<SettingsView> with SingleTickerProviderSt
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _callsignController = TextEditingController(text: widget.myProfile.callsign);
     _avatarBase64 = widget.myProfile.avatarBase64;
   }
@@ -170,40 +169,6 @@ class _SettingsViewState extends State<SettingsView> with SingleTickerProviderSt
     );
   }
 
-  void _confirmRemoveContact(OperatorProfile peer) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: C2Colors.slateCard,
-        title: Row(
-          children: [
-            const Icon(Icons.person_remove, color: Colors.redAccent, size: 20),
-            const SizedBox(width: 8),
-            Text('UNPAIR ${peer.callsign}?', style: const TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 14)),
-          ],
-        ),
-        content: Text(
-          'Unpair and remove ${peer.name} (${peer.callsign}) from your squad directory? An unpair signal will be transmitted to notify their device.',
-          style: const TextStyle(color: Colors.white70, fontSize: 12),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('CANCEL', style: TextStyle(color: Colors.white54)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
-            onPressed: () {
-              Navigator.pop(ctx);
-              widget.onRemoveContact(peer.id);
-            },
-            child: const Text('UNPAIR & DELETE NOW', style: TextStyle(fontWeight: FontWeight.bold)),
-          ),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -228,7 +193,6 @@ class _SettingsViewState extends State<SettingsView> with SingleTickerProviderSt
           labelStyle: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
           tabs: const [
             Tab(text: 'PROFILE'),
-            Tab(text: 'SQUAD DIRECTORY'),
             Tab(text: 'ACTIVITY LOG'),
             Tab(text: 'SYSTEM'),
           ],
@@ -238,7 +202,6 @@ class _SettingsViewState extends State<SettingsView> with SingleTickerProviderSt
         controller: _tabController,
         children: [
           _buildProfileTab(),
-          _buildSquadDirectoryTab(),
           _buildActivityLogTab(),
           _buildSystemTab(),
         ],
@@ -246,12 +209,10 @@ class _SettingsViewState extends State<SettingsView> with SingleTickerProviderSt
     );
   }
 
+  static String _shortKey(String key) =>
+      key.length <= 16 ? key : '${key.substring(0, 16)}...';
+
   Widget _buildProfileTab() {
-    const samplePeerPublicKey = 'pubkey_sample_peer_88412059128502';
-    final safetyNumber = E2EEEngine.computeSafetyNumber(
-      widget.myProfile.publicKey,
-      samplePeerPublicKey,
-    );
 
     return ListView(
       padding: const EdgeInsets.all(20),
@@ -272,7 +233,7 @@ class _SettingsViewState extends State<SettingsView> with SingleTickerProviderSt
                       shape: BoxShape.circle,
                       border: Border.all(color: Colors.cyanAccent, width: 3),
                       boxShadow: [
-                        BoxShadow(color: Colors.cyanAccent.withOpacity(0.3), blurRadius: 12, spreadRadius: 2),
+                        BoxShadow(color: Colors.cyanAccent.withValues(alpha: 0.3), blurRadius: 12, spreadRadius: 2),
                       ],
                     ),
                     child: ClipOval(
@@ -352,9 +313,15 @@ class _SettingsViewState extends State<SettingsView> with SingleTickerProviderSt
             children: [
               Text('Operator ID: ${widget.myProfile.id}', style: const TextStyle(color: Colors.white70, fontSize: 11)),
               const SizedBox(height: 6),
-              Text('Public Key: ${widget.myProfile.publicKey.substring(0, 20)}...', style: const TextStyle(color: Colors.white38, fontSize: 10)),
+              const Text(
+                'Your ID is derived from your identity key, so no other device can claim it.',
+                style: TextStyle(color: Colors.white38, fontSize: 10),
+              ),
               const SizedBox(height: 6),
-              Text('Safety Number Fingerprint: $safetyNumber', style: const TextStyle(color: C2Colors.emeraldAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+              Text(
+                'Identity key: ${_shortKey(widget.myProfile.signPublicKey)}',
+                style: const TextStyle(color: Colors.white38, fontSize: 10),
+              ),
             ],
           ),
         ),
@@ -373,108 +340,6 @@ class _SettingsViewState extends State<SettingsView> with SingleTickerProviderSt
         initials,
         style: const TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold, fontSize: 24),
       ),
-    );
-  }
-
-  Widget _buildSquadDirectoryTab() {
-    final pairedContacts = widget.teamProfiles.where((p) => p.id != widget.myProfile.id).toList();
-
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            const Text('PAIRED SQUAD CONTACTS', style: TextStyle(color: Colors.cyanAccent, fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 1.0)),
-            Text('${pairedContacts.length} PAIRED', style: const TextStyle(color: Colors.white54, fontSize: 10, fontWeight: FontWeight.bold)),
-          ],
-        ),
-        const SizedBox(height: 12),
-
-        if (pairedContacts.isEmpty) ...[
-          Container(
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              color: C2Colors.slateCard,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Center(
-              child: Text(
-                'No paired squad contacts. Go to the "Pairing" tab to scan or share a pairing code with team members.',
-                style: TextStyle(color: Colors.white38, fontSize: 11),
-                textAlign: TextAlign.center,
-              ),
-            ),
-          ),
-        ] else ...[
-          ListView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: pairedContacts.length,
-            itemBuilder: (context, index) {
-              final peer = pairedContacts[index];
-              final safetyNumber = E2EEEngine.computeSafetyNumber(widget.myProfile.publicKey, peer.publicKey);
-
-              return Container(
-                margin: const EdgeInsets.only(bottom: 10),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: C2Colors.slateCard,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.white12),
-                ),
-                child: Row(
-                  children: [
-                    CircleAvatar(
-                      radius: 20,
-                      backgroundColor: const Color(0xFF0F172A),
-                      child: Text(
-                        peer.callsign.substring(0, 2),
-                        style: const TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold, fontSize: 12),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Text(peer.callsign, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13)),
-                              const SizedBox(width: 8),
-                              Container(
-                                width: 8,
-                                height: 8,
-                                decoration: BoxDecoration(
-                                  color: peer.isOnline ? C2Colors.emeraldAccent : Colors.white38,
-                                  shape: BoxShape.circle,
-                                ),
-                              ),
-                            ],
-                          ),
-                          Text(peer.name, style: const TextStyle(color: Colors.white54, fontSize: 11)),
-                          const SizedBox(height: 2),
-                          Text('Safety #: $safetyNumber', style: const TextStyle(color: C2Colors.emeraldAccent, fontSize: 9, fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                    ),
-                    ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.red.withOpacity(0.2),
-                        foregroundColor: Colors.redAccent,
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                      ),
-                      icon: const Icon(Icons.delete_outline, size: 14),
-                      label: const Text('UNPAIR', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 10)),
-                      onPressed: () => _confirmRemoveContact(peer),
-                    ),
-                  ],
-                ),
-              );
-            },
-          ),
-        ],
-      ],
     );
   }
 
@@ -526,7 +391,7 @@ class _SettingsViewState extends State<SettingsView> with SingleTickerProviderSt
                       decoration: BoxDecoration(
                         color: C2Colors.slateCard,
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: _getSeverityColor(log.severity).withOpacity(0.4)),
+                        border: Border.all(color: _getSeverityColor(log.severity).withValues(alpha: 0.4)),
                       ),
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,

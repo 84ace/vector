@@ -15,6 +15,13 @@ class Telemetry {
   final String wifiSSID;
   final DateTime timestamp;
 
+  /// How often the sender expects to report, as it reported it.
+  ///
+  /// Freshness has to be judged against the sender's own cadence. A device on
+  /// a 30-minute low-battery heartbeat is behaving perfectly at 20 minutes of
+  /// silence; a device reporting every 15 seconds is not.
+  final Duration reportInterval;
+
   Telemetry({
     required this.operatorId,
     required this.latitude,
@@ -29,17 +36,42 @@ class Telemetry {
     required this.cellularSignalBars,
     required this.wifiSSID,
     required this.timestamp,
+    this.reportInterval = const Duration(minutes: 15),
   });
 
-  bool get isStale {
-    final age = DateTime.now().difference(timestamp);
-    return age.inMinutes >= 1;
-  }
+  /// Silence beyond this means the operator has missed reports.
+  Duration get _staleAfter => reportInterval * 2.5;
 
-  bool get isOffline {
-    final age = DateTime.now().difference(timestamp);
-    return age.inMinutes >= 5;
-  }
+  /// Silence beyond this means we should stop trusting the position at all.
+  Duration get _offlineAfter => reportInterval * 5;
+
+  Duration get age => DateTime.now().difference(timestamp);
+
+  Telemetry copyWith({String? operatorId}) => Telemetry(
+        operatorId: operatorId ?? this.operatorId,
+        latitude: latitude,
+        longitude: longitude,
+        altitude: altitude,
+        speed: speed,
+        heading: heading,
+        accuracy: accuracy,
+        batteryLevel: batteryLevel,
+        isCharging: isCharging,
+        networkType: networkType,
+        cellularSignalBars: cellularSignalBars,
+        wifiSSID: wifiSSID,
+        timestamp: timestamp,
+        reportInterval: reportInterval,
+      );
+
+  /// True once the operator has missed roughly two expected reports.
+  ///
+  /// This was a flat one minute, while a stationary device only transmits on a
+  /// 15-to-30-minute heartbeat — so every healthy peer read "STALE SIGNAL"
+  /// almost permanently, and the indicator carried no information.
+  bool get isStale => age > _staleAfter;
+
+  bool get isOffline => age > _offlineAfter;
 
   Map<String, dynamic> toJson() => {
         'operator_id': operatorId,
@@ -55,6 +87,7 @@ class Telemetry {
         'cellular_signal_bars': cellularSignalBars,
         'wifi_ssid': wifiSSID,
         'timestamp': timestamp.millisecondsSinceEpoch,
+        'report_interval_ms': reportInterval.inMilliseconds,
       };
 
   factory Telemetry.fromJson(Map<String, dynamic> json) {
@@ -77,6 +110,9 @@ class Telemetry {
       timestamp: json['timestamp'] != null
           ? DateTime.fromMillisecondsSinceEpoch(json['timestamp'])
           : DateTime.now(),
+      reportInterval: json['report_interval_ms'] is int
+          ? Duration(milliseconds: json['report_interval_ms'] as int)
+          : const Duration(minutes: 15),
     );
   }
 }

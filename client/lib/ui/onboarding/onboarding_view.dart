@@ -107,13 +107,18 @@ class _OnboardingViewState extends State<OnboardingView> {
   void _submit() {
     if (!_formKey.currentState!.validate()) return;
 
+    // The operator ID and both public keys are filled in once the identity
+    // keypair is generated: the ID is derived from the signing key so that it
+    // cannot be claimed by another device. Nothing chosen here is security
+    // relevant — the callsign is a display name.
     final profile = OperatorProfile(
-      id: 'op-${_callsignController.text.toLowerCase()}-${DateTime.now().millisecondsSinceEpoch % 1000}',
+      id: '',
       callsign: _callsignController.text.toUpperCase(),
       name: _callsignController.text.toUpperCase(),
       role: _selectedRole,
       avatarBase64: '',
-      publicKey: 'pubkey_${_callsignController.text.toLowerCase()}_${DateTime.now().millisecondsSinceEpoch}',
+      signPublicKey: '',
+      kexPublicKey: '',
       lastSeen: DateTime.now(),
       isOnline: true,
     );
@@ -187,7 +192,7 @@ class _OnboardingViewState extends State<OnboardingView> {
 
                 // Role Dropdown
                 DropdownButtonFormField<OperatorRole>(
-                  value: _selectedRole,
+                  initialValue: _selectedRole,
                   dropdownColor: C2Colors.slateCard,
                   decoration: const InputDecoration(
                     labelText: 'Operational Role',

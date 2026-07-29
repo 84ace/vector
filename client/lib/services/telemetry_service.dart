@@ -1,312 +1,417 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
+import 'dart:io';
+
 import 'package:battery_plus/battery_plus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_compass/flutter_compass.dart';
 import 'package:geolocator/geolocator.dart';
-import '../models/telemetry.dart';
+
 import '../models/c2_message.dart';
-import '../services/mesh_client.dart';
-import '../services/p2p_mesh_engine.dart';
-import '../crypto/mls_group_engine.dart';
+import '../models/telemetry.dart';
+import 'mesh_client.dart';
+import 'p2p_mesh_engine.dart';
+import 'secure_channel.dart';
+import 'telemetry_cadence.dart';
 
 class TelemetryService {
-  final String myOperatorId;
+  static const _maxOfflineBuffer = 200;
+  static const _maxBreadcrumbs = 50;
+
+  /// How often the heartbeat re-evaluates conditions. The reporting interval
+  /// itself comes from [_cadence] and changes as the operator does.
+  static const _tickInterval = Duration(seconds: 10);
+
+  final SecureChannel channel;
   final MeshClient meshClient;
   final P2PMeshEngine? p2pMeshEngine;
-  final MLSGroupEngine? mlsGroupEngine;
 
-  // Real Hardware Instances
   final Battery _battery = Battery();
   final Connectivity _connectivity = Connectivity();
 
   StreamSubscription<Position>? _positionSubscription;
   StreamSubscription<CompassEvent>? _compassSubscription;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  StreamSubscription<BatteryState>? _batterySubscription;
+  StreamSubscription<C2Message>? _meshSubscription;
+  StreamSubscription<C2Message>? _p2pSubscription;
 
-  // Current Hardware State
-  double _currentLat = 0.0;
-  double _currentLng = 0.0;
+  double? _currentLat;
+  double? _currentLng;
   double _currentAlt = 0.0;
   double _currentSpeed = 0.0;
   double _currentHeading = 0.0;
+  double _currentAccuracy = 0.0;
   int _batteryLevel = 100;
   bool _isCharging = false;
   NetworkType _netType = NetworkType.offline;
-  String _wifiSSID = 'WIFI_LAN';
-  int _cellularSignal = 3;
+
+  /// Decides the reporting interval from motion, power and link type.
+  final TelemetryCadence _cadence = TelemetryCadence();
+
+  MotionState get motionState => _cadence.motion;
 
   final List<Telemetry> _offlineBuffer = [];
 
-  final StreamController<Telemetry> _myTelemetryController =
-      StreamController<Telemetry>.broadcast();
-  final StreamController<Map<String, Telemetry>> _teamTelemetryController =
-      StreamController<Map<String, Telemetry>>.broadcast();
+  final _myTelemetryController = StreamController<Telemetry>.broadcast();
+  final _teamTelemetryController = StreamController<Map<String, Telemetry>>.broadcast();
+  final _rejectionController = StreamController<RejectedMessage>.broadcast();
 
   final Map<String, Telemetry> _teamLatestTelemetry = {};
   final Map<String, List<Telemetry>> _teamBreadcrumbs = {};
 
   Stream<Telemetry> get myTelemetry => _myTelemetryController.stream;
-  Stream<Map<String, Telemetry>> get teamTelemetry =>
-      _teamTelemetryController.stream;
+  Stream<Map<String, Telemetry>> get teamTelemetry => _teamTelemetryController.stream;
+  Stream<RejectedMessage> get rejections => _rejectionController.stream;
 
   Map<String, Telemetry> get teamLatest => _teamLatestTelemetry;
   Map<String, List<Telemetry>> get teamBreadcrumbs => _teamBreadcrumbs;
 
+  Timer? _heartbeatTimer;
+  DateTime? _lastTelemetrySentTime;
+
   TelemetryService({
-    required this.myOperatorId,
+    required this.channel,
     required this.meshClient,
     this.p2pMeshEngine,
-    this.mlsGroupEngine,
   }) {
-    void handleIncomingTelemetry(C2Message msg) {
-      if (msg.type == MessageType.telemetry) {
-        try {
-          String rawJson = msg.encryptedBody;
-          if (mlsGroupEngine != null) {
-            final decrypted = mlsGroupEngine!.decryptGroupMessage(msg.encryptedBody);
-            if (decrypted.startsWith('[GROUP DECRYPTION ERROR')) {
-              debugPrint('[TELEMETRY_SERVICE SECURITY] Decryption failed for incoming telemetry from ${msg.senderId}. Unpaired node rejected.');
-              return;
-            }
-            rawJson = decrypted;
-          }
-          final Map<String, dynamic> data = jsonDecode(rawJson);
-          final parsed = Telemetry.fromJson(data);
-          final effectiveOpId = parsed.operatorId.isNotEmpty ? parsed.operatorId : msg.senderId;
+    _meshSubscription = meshClient.incomingMessages.listen(_handleIncomingTelemetry);
+    _p2pSubscription = p2pMeshEngine?.incomingP2PMessages.listen(_handleIncomingTelemetry);
 
-          if (effectiveOpId.isNotEmpty && parsed.latitude != 0.0) {
-            final tele = Telemetry(
-              operatorId: effectiveOpId,
-              latitude: parsed.latitude,
-              longitude: parsed.longitude,
-              altitude: parsed.altitude,
-              speed: parsed.speed,
-              heading: parsed.heading,
-              accuracy: parsed.accuracy,
-              batteryLevel: parsed.batteryLevel,
-              isCharging: parsed.isCharging,
-              networkType: parsed.networkType,
-              cellularSignalBars: parsed.cellularSignalBars,
-              wifiSSID: parsed.wifiSSID,
-              timestamp: parsed.timestamp,
-            );
-            _recordTeamTelemetry(tele);
-          }
-        } catch (e) {
-          debugPrint('[TELEMETRY_SERVICE ERROR] handleIncomingTelemetry failed: $e');
-        }
-      }
-    }
-
-    // Listen to incoming network telemetry envelopes from relay and P2P mesh
-    meshClient.incomingMessages.listen(handleIncomingTelemetry);
-    p2pMeshEngine?.incomingP2PMessages.listen(handleIncomingTelemetry);
-
-    // Initialize connectivity listener
     _connectivitySubscription = _connectivity.onConnectivityChanged.listen((results) {
       if (results.isEmpty) {
         _netType = NetworkType.offline;
         return;
       }
-      final primary = results.first;
-      if (primary == ConnectivityResult.wifi) {
-        _netType = NetworkType.wifi;
-      } else if (primary == ConnectivityResult.mobile) {
-        _netType = NetworkType.cellular;
-      } else {
-        _netType = NetworkType.offline;
+      switch (results.first) {
+        case ConnectivityResult.wifi:
+          _netType = NetworkType.wifi;
+        case ConnectivityResult.mobile:
+          _netType = NetworkType.cellular;
+        default:
+          _netType = NetworkType.offline;
       }
     });
   }
 
-  Timer? _heartbeatTimer;
-  DateTime? _lastTelemetrySentTime;
+  Future<void> _handleIncomingTelemetry(C2Message msg) async {
+    if (msg.type != MessageType.telemetry) return;
 
-  /// Dynamic power-aware heartbeat interval (15 to 30 mins)
-  Duration get _heartbeatInterval {
-    if (_isCharging || _batteryLevel > 50) {
-      return const Duration(minutes: 15);
-    } else if (_batteryLevel >= 20) {
-      return const Duration(minutes: 20);
-    } else {
-      return const Duration(minutes: 30);
+    // Verified and decrypted centrally: a position only reaches the map if it
+    // was signed by a paired contact whose ID matches its identity key.
+    final result = await channel.open(msg);
+    if (result is RejectedMessage) {
+      if (!_rejectionController.isClosed) _rejectionController.add(result);
+      return;
+    }
+
+    final opened = result as OpenedMessage;
+    try {
+      final data = jsonDecode(opened.plaintext) as Map<String, dynamic>;
+      final parsed = Telemetry.fromJson(data);
+
+      // The envelope's proven sender wins over whatever the payload claims, so
+      // a paired contact cannot report a position on somebody else's behalf.
+      final tele = parsed.copyWith(operatorId: opened.envelope.senderId);
+      if (!_isPlausiblePosition(tele)) {
+        debugPrint('[TELEMETRY] Discarded out-of-range position from ${tele.operatorId}');
+        return;
+      }
+
+      _recordTeamTelemetry(tele);
+    } catch (e) {
+      debugPrint('[TELEMETRY] Malformed payload from ${msg.senderId}: $e');
     }
   }
 
-  /// Request permissions and start live hardware tracking
+  static bool _isPlausiblePosition(Telemetry t) =>
+      t.latitude.abs() <= 90.0 &&
+      t.longitude.abs() <= 180.0 &&
+      !(t.latitude == 0.0 && t.longitude == 0.0);
+
+  /// Current reporting interval, from the adaptive policy.
+  ///
+  /// Replaces a battery-only heartbeat that ran between 15 and 30 minutes
+  /// regardless of what the operator was doing — far too slow to follow anyone
+  /// who was actually moving.
+  Duration get _reportInterval => _cadence.intervalFor(
+        batteryLevel: _batteryLevel,
+        isCharging: _isCharging,
+        network: _netType,
+      );
+
   Future<void> startReporting() async {
-    // 1. Request location permissions
-    LocationPermission permission = await Geolocator.checkPermission();
+    var permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
 
-    if (permission == LocationPermission.always ||
-        permission == LocationPermission.whileInUse) {
-      // 2. IMMEDIATE PUSH ON APP START
+    if (permission != LocationPermission.always &&
+        permission != LocationPermission.whileInUse) {
+      debugPrint('[TELEMETRY] Location permission is $permission — this device '
+          'will not report a position to the squad.');
+    }
+
+    if (permission == LocationPermission.always || permission == LocationPermission.whileInUse) {
       try {
-        Position? initialPos = await Geolocator.getLastKnownPosition();
+        var initialPos = await Geolocator.getLastKnownPosition();
         initialPos ??= await Geolocator.getCurrentPosition(
           locationSettings: const LocationSettings(
             accuracy: LocationAccuracy.high,
             timeLimit: Duration(seconds: 5),
           ),
         );
-        if (initialPos != null) {
-          _currentLat = initialPos.latitude;
-          _currentLng = initialPos.longitude;
-          _currentAlt = initialPos.altitude;
-          _currentSpeed = initialPos.speed;
-          _sendLatestTelemetry(); // Immediate startup telemetry broadcast
-        }
+        _applyPosition(initialPos);
+        await _sendLatestTelemetry(force: true);
       } catch (e) {
-        debugPrint('[TELEMETRY_SERVICE] Initial startup GPS push error: $e');
+        debugPrint('[TELEMETRY] Initial GPS fix failed: $e');
       }
 
-      // 3. Movement GPS Stream with 3-meter distance filter
-      _positionSubscription = Geolocator.getPositionStream(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-          distanceFilter: 3, // 3-meter movement filter
-        ),
-      ).listen((Position position) {
-        _currentLat = position.latitude;
-        _currentLng = position.longitude;
-        _currentAlt = position.altitude;
-        _currentSpeed = position.speed;
-        _sendLatestTelemetry();
-      });
+      _subscribePositionStream();
     }
 
-    // 4. Subscribe to Compass Stream
-    _compassSubscription = FlutterCompass.events?.listen((CompassEvent event) {
-      final direction = event.heading;
-      if (direction != null) {
-        _currentHeading = direction;
-      }
-    });
-
-    // 5. Power-Aware Heartbeat Timer (checks every 30 seconds)
-    _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+    // flutter_compass ships no desktop implementation, and its platform stream
+    // throws MissingPluginException on listen rather than returning null. Guard
+    // by platform and handle the error, so a headless heading simply stays at 0
+    // instead of surfacing an unhandled exception at every startup.
+    if (Platform.isAndroid || Platform.isIOS) {
       try {
-        _batteryLevel = await _battery.batteryLevel;
-        final state = await _battery.onBatteryStateChanged.first;
-        _isCharging = state == BatteryState.charging;
-      } catch (_) {}
-
-      final now = DateTime.now();
-      final timeSinceLastSent = _lastTelemetrySentTime == null
-          ? Duration.zero
-          : now.difference(_lastTelemetrySentTime!);
-
-      // Force push if heartbeat interval elapsed or initial location missing
-      if (_lastTelemetrySentTime == null || timeSinceLastSent >= _heartbeatInterval || _currentLat == 0.0) {
-        debugPrint('[TELEMETRY_SERVICE] Heartbeat push triggered (interval: ${_heartbeatInterval.inMinutes}m, battery: $_batteryLevel%, charging: $_isCharging)');
-        try {
-          final pos = await Geolocator.getCurrentPosition(
-            locationSettings: const LocationSettings(
-              accuracy: LocationAccuracy.medium,
-              timeLimit: Duration(seconds: 4),
-            ),
-          );
-          _currentLat = pos.latitude;
-          _currentLng = pos.longitude;
-          _currentAlt = pos.altitude;
-          _currentSpeed = pos.speed;
-        } catch (_) {}
-
-        _sendLatestTelemetry();
+        _compassSubscription = FlutterCompass.events?.listen(
+          (event) {
+            final heading = event.heading;
+            if (heading != null) _currentHeading = heading;
+          },
+          onError: (Object e) => debugPrint('[TELEMETRY] Compass unavailable: $e'),
+          cancelOnError: true,
+        );
+      } catch (e) {
+        debugPrint('[TELEMETRY] Compass unavailable: $e');
       }
+    }
+
+    // Track charge state from the event stream rather than awaiting `.first`
+    // inside the heartbeat: that waits for the *next* transition, which on a
+    // stationary charge state never arrives, leaking a subscription per tick.
+    try {
+      _batteryLevel = await _battery.batteryLevel;
+      _isCharging = (await _battery.batteryState) == BatteryState.charging;
+    } catch (_) {}
+    _batterySubscription = _battery.onBatteryStateChanged.listen((state) {
+      _isCharging = state == BatteryState.charging;
+    });
+
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(_tickInterval, (_) => _onHeartbeat());
+  }
+
+  /// (Re)subscribes to the position stream with settings matched to how the
+  /// operator is currently moving.
+  ///
+  /// A stationary device does not need high-accuracy fixes every few metres;
+  /// a moving one does. This governs how often the GPS subsystem wakes at all,
+  /// which is the larger share of the power cost.
+  void _subscribePositionStream() {
+    _positionSubscription?.cancel();
+    _positionSubscription = Geolocator.getPositionStream(
+      locationSettings: LocationSettings(
+        accuracy: _cadence.wantsHighAccuracy
+            ? LocationAccuracy.high
+            : LocationAccuracy.reduced,
+        distanceFilter: _cadence.distanceFilterMeters,
+      ),
+    ).listen((position) {
+      _applyPosition(position);
+
+      if (_cadence.observeSpeed(position.speed)) {
+        debugPrint('[TELEMETRY] Motion is now ${_cadence.motion.label}; '
+            'reporting every ${_reportInterval.inSeconds}s');
+        // Re-tune the GPS subscription, and report the change immediately so
+        // peers learn the new cadence rather than judging us on the old one.
+        _subscribePositionStream();
+        _sendLatestTelemetry(force: true);
+        return;
+      }
+
+      _sendLatestTelemetry();
     });
   }
 
-  void stopReporting() {
-    _positionSubscription?.cancel();
-    _compassSubscription?.cancel();
-    _connectivitySubscription?.cancel();
+  void _applyPosition(Position position) {
+    _currentLat = position.latitude;
+    _currentLng = position.longitude;
+    _currentAlt = position.altitude;
+    _currentSpeed = position.speed;
+    _currentAccuracy = position.accuracy;
+  }
+
+  Future<void> _onHeartbeat() async {
+    try {
+      _batteryLevel = await _battery.batteryLevel;
+    } catch (_) {}
+
+    // A device that stops moving stops producing position updates, so the
+    // stillness timeout has to be evaluated here too, not only on new fixes.
+    if (_cadence.observeSpeed(0)) {
+      debugPrint('[TELEMETRY] Motion is now ${_cadence.motion.label}; '
+          'reporting every ${_reportInterval.inSeconds}s');
+      _subscribePositionStream();
+      await _sendLatestTelemetry(force: true);
+      return;
+    }
+
+    final elapsed = _lastTelemetrySentTime == null
+        ? null
+        : DateTime.now().difference(_lastTelemetrySentTime!);
+
+    if (elapsed != null && elapsed < _reportInterval && _currentLat != null) {
+      return;
+    }
+
+    try {
+      final pos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.medium,
+          timeLimit: Duration(seconds: 4),
+        ),
+      );
+      _applyPosition(pos);
+    } catch (_) {}
+
+    await _sendLatestTelemetry(force: true);
+  }
+
+  Future<void> stopReporting() async {
+    await _positionSubscription?.cancel();
+    await _compassSubscription?.cancel();
+    await _connectivitySubscription?.cancel();
+    await _batterySubscription?.cancel();
     _heartbeatTimer?.cancel();
   }
 
-  void _sendLatestTelemetry() {
-    if (_currentLat == 0.0 || _currentLng == 0.0) {
-      return; // Do not broadcast zero coordinates over network
-    }
+  Future<void> dispose() async {
+    await stopReporting();
+    await _meshSubscription?.cancel();
+    await _p2pSubscription?.cancel();
+    await _myTelemetryController.close();
+    await _teamTelemetryController.close();
+    await _rejectionController.close();
+  }
 
+  Telemetry _snapshot({DateTime? at}) => Telemetry(
+        operatorId: channel.myOperatorId,
+        latitude: _currentLat ?? 0.0,
+        longitude: _currentLng ?? 0.0,
+        altitude: _currentAlt,
+        speed: _currentSpeed,
+        heading: _currentHeading,
+        accuracy: _currentAccuracy,
+        batteryLevel: _batteryLevel,
+        isCharging: _isCharging,
+        networkType: _netType,
+        cellularSignalBars: _signalBarsForNetwork(),
+        wifiSSID: '',
+        timestamp: at ?? DateTime.now(),
+        // Tell peers our cadence so they can judge our silence correctly. It
+        // moves with us, so their staleness thresholds move with it.
+        reportInterval: _reportInterval,
+      );
+
+  /// Signal strength is not exposed by the plugins in use; report it as unknown
+  /// rather than the fixed "3 bars" the previous build transmitted as if measured.
+  int _signalBarsForNetwork() => 0;
+
+  bool _warnedNoFix = false;
+
+  Future<void> _sendLatestTelemetry({bool force = false}) async {
+    if (_currentLat == null || _currentLng == null) {
+      // Silence here was indistinguishable from a delivery failure: a device
+      // with no fix simply never appears on anyone's map. Say so once.
+      if (!_warnedNoFix) {
+        _warnedNoFix = true;
+        debugPrint('[TELEMETRY] No position fix yet — nothing to transmit. '
+            'Check location permission for this app.');
+      }
+      return;
+    }
+    _warnedNoFix = false;
+
+    if (!force && _lastTelemetrySentTime != null) {
+      if (DateTime.now().difference(_lastTelemetrySentTime!) < _reportInterval) return;
+    }
     _lastTelemetrySentTime = DateTime.now();
 
-    final tele = Telemetry(
-      operatorId: myOperatorId,
-      latitude: _currentLat,
-      longitude: _currentLng,
-      altitude: _currentAlt,
-      speed: _currentSpeed,
-      heading: _currentHeading,
-      accuracy: 3.0,
-      batteryLevel: _batteryLevel,
-      isCharging: _isCharging,
-      networkType: _netType,
-      cellularSignalBars: _cellularSignal,
-      wifiSSID: _wifiSSID,
-      timestamp: DateTime.now(),
-    );
-
-    _myTelemetryController.add(tele);
+    final tele = _snapshot();
+    if (!_myTelemetryController.isClosed) _myTelemetryController.add(tele);
     _recordTeamTelemetry(tele);
 
-    final rawJson = jsonEncode(tele.toJson());
-    final encryptedBody = mlsGroupEngine != null
-        ? mlsGroupEngine!.encryptGroupMessage(rawJson)
-        : rawJson;
-
-    // Create telemetry broadcast envelope
-    final envelope = C2Message(
-      id: 'tele-${DateTime.now().millisecondsSinceEpoch}',
-      type: MessageType.telemetry,
-      senderId: myOperatorId,
-      encryptedBody: encryptedBody,
-      timestamp: DateTime.now(),
-      isMe: true,
-    );
-
-    final sentMesh = meshClient.sendMessage(envelope);
-    final sentP2P = p2pMeshEngine?.sendP2PDirectMessage(envelope) ?? false;
-    final sent = sentMesh || sentP2P;
-
-    if (!sent) {
+    if (!await _transmit(tele)) {
       _offlineBuffer.add(tele);
-      if (_offlineBuffer.length > 200) _offlineBuffer.removeAt(0);
-    } else if (_offlineBuffer.isNotEmpty) {
-      // Flush buffered offline telemetry
-      for (final buffered in List<Telemetry>.from(_offlineBuffer)) {
-        final offlineEnv = C2Message(
-          id: 'tele-${buffered.timestamp.millisecondsSinceEpoch}',
-          type: MessageType.telemetry,
-          senderId: myOperatorId,
-          encryptedBody: jsonEncode(buffered.toJson()),
-          timestamp: buffered.timestamp,
-          isMe: true,
-        );
-        final flushedMesh = meshClient.sendMessage(offlineEnv);
-        final flushedP2P = p2pMeshEngine?.sendP2PDirectMessage(offlineEnv) ?? false;
-        if (flushedMesh || flushedP2P) {
-          _offlineBuffer.remove(buffered);
-        }
+      if (_offlineBuffer.length > _maxOfflineBuffer) _offlineBuffer.removeAt(0);
+      return;
+    }
+
+    await _flushOfflineBuffer();
+  }
+
+  /// Seals and sends one telemetry snapshot. Buffered replays go through here
+  /// too — the previous build re-sent them as raw JSON, which both leaked
+  /// positions in cleartext and guaranteed receivers would reject them.
+  Future<bool> _transmit(Telemetry tele) async {
+    try {
+      final envelope = await channel.sealTeam(
+        type: MessageType.telemetry,
+        plaintext: jsonEncode(tele.toJson()),
+        idPrefix: 'tele',
+      );
+
+      final sentMesh = meshClient.sendMessage(envelope);
+      final sentP2P = p2pMeshEngine?.sendP2PDirectMessage(envelope) ?? false;
+      return sentMesh || sentP2P;
+    } catch (e) {
+      debugPrint('[TELEMETRY] Failed to seal telemetry: $e');
+      return false;
+    }
+  }
+
+  Future<void> _flushOfflineBuffer() async {
+    if (_offlineBuffer.isEmpty) return;
+
+    final pending = List<Telemetry>.from(_offlineBuffer);
+    for (final buffered in pending) {
+      if (await _transmit(buffered)) {
+        _offlineBuffer.remove(buffered);
+      } else {
+        break; // Link went away again; keep the rest for the next attempt.
       }
     }
   }
 
   void _recordTeamTelemetry(Telemetry tele) {
     _teamLatestTelemetry[tele.operatorId] = tele;
-    
-    // Maintain breadcrumb trail (max 50 past waypoints per operator)
-    final history = _teamBreadcrumbs[tele.operatorId] ?? [];
-    history.add(tele);
-    if (history.length > 50) history.removeAt(0);
-    _teamBreadcrumbs[tele.operatorId] = history;
 
-    _teamTelemetryController.add(Map<String, Telemetry>.from(_teamLatestTelemetry));
+    final history = _teamBreadcrumbs.putIfAbsent(tele.operatorId, () => <Telemetry>[]);
+    history.add(tele);
+    if (history.length > _maxBreadcrumbs) history.removeAt(0);
+
+    if (!_teamTelemetryController.isClosed) {
+      _teamTelemetryController.add(Map<String, Telemetry>.from(_teamLatestTelemetry));
+    }
+  }
+
+  /// Transmits the current position now, bypassing the rate limit.
+  ///
+  /// Used when a contact is added or a route appears: the periodic heartbeat is
+  /// 15-30 minutes and the position stream only fires on movement, so without
+  /// this a stationary device can look absent to a peer for a very long time.
+  Future<void> pushNow() => _sendLatestTelemetry(force: true);
+
+  /// Drops all cached state for an operator that has been unpaired.
+  void forgetOperator(String operatorId) {
+    _teamLatestTelemetry.remove(operatorId);
+    _teamBreadcrumbs.remove(operatorId);
+    if (!_teamTelemetryController.isClosed) {
+      _teamTelemetryController.add(Map<String, Telemetry>.from(_teamLatestTelemetry));
+    }
   }
 }

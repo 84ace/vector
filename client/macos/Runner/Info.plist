@@ -38,5 +38,7 @@
 	<string>This app requires access to your location to broadcast situational tactical telemetry to your team members.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>This app requires access to your microphone to record and transmit Push-To-Talk (PTT) tactical voice audio to squad members.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>This app requires access to your camera for video calls with squad members.</string>
 </dict>
 </plist>

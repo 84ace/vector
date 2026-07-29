@@ -1,108 +1,175 @@
 import 'dart:convert';
-import 'package:crypto/crypto.dart';
-import 'package:flutter/foundation.dart';
+import 'dart:typed_data';
 
-/// E2EEEngine handles Signal Double Ratchet-style End-to-End Encryption
-/// for 1:1 messaging, key exchange, and safety number fingerprinting.
+import 'package:cryptography/cryptography.dart';
+import 'package:crypto/crypto.dart' as hashing;
+
+import 'operator_identity.dart';
+
+/// Raised when a ciphertext fails authentication, is malformed, or replays a
+/// nonce we have already accepted. Callers must treat this as hostile input,
+/// not as a display string.
+class DecryptionFailure implements Exception {
+  final String reason;
+  const DecryptionFailure(this.reason);
+  @override
+  String toString() => 'DecryptionFailure: $reason';
+}
+
+/// E2EEEngine provides authenticated pairwise encryption between two operators.
+///
+/// Construction: X25519 static-static key agreement -> HKDF-SHA256 -> AES-256-GCM
+/// with a fresh random 96-bit nonce per message. The envelope header is bound
+/// into the ciphertext as additional authenticated data, so a relay cannot move
+/// a message between conversations or rewrite its metadata undetected.
+///
+/// Scope, stated plainly: this is *not* a ratchet. The pairwise key is static
+/// for the lifetime of a contact, so there is no forward secrecy and no
+/// post-compromise recovery — stealing a device's key material exposes past
+/// captured traffic for that pair. Replacing this with a Double Ratchet is
+/// tracked separately; nothing here should be described as Signal or X3DH.
 class E2EEEngine {
-  final String myPrivateKey;
-  final String myPublicKey;
+  static const _keyInfo = 'vector-c2/pairwise/v2';
+  static final _aead = AesGcm.with256bits();
 
-  E2EEEngine({
-    required this.myPrivateKey,
-    required this.myPublicKey,
-  });
+  final OperatorIdentity identity;
 
-  /// Generates a keypair for identity and prekeys.
-  static Map<String, String> generateKeyPair(String seed) {
-    final bytes = utf8.encode(seed + DateTime.now().toIso8601String());
-    final priv = sha256.convert(bytes).toString();
-    final pub = sha256.convert(utf8.encode(priv + "_public_key")).toString();
-    return {
-      'privateKey': priv,
-      'publicKey': pub,
-    };
+  /// Cache of derived pairwise keys, keyed by remote X25519 public key.
+  /// X25519 + HKDF per message is wasteful on the PTT path, which encrypts
+  /// an audio chunk every 600ms.
+  final Map<String, SecretKey> _sessionKeys = {};
+
+  /// Nonces already accepted per peer, for replay rejection.
+  final Map<String, Set<String>> _seenNonces = {};
+
+  E2EEEngine({required this.identity});
+
+  Future<SecretKey> _sessionKey(String remoteKexPublicKey) async {
+    final cached = _sessionKeys[remoteKexPublicKey];
+    if (cached != null) return cached;
+
+    final derived = await identity.deriveSharedKey(remoteKexPublicKey, info: _keyInfo);
+    _sessionKeys[remoteKexPublicKey] = derived;
+    return derived;
   }
 
-  /// Derives symmetric shared secret between local identity and remote public key (X3DH).
-  String deriveSharedSecret(String remotePublicKey) {
-    final sortedKeys = [myPublicKey, remotePublicKey]..sort();
-    final combined = utf8.encode(sortedKeys.join('::c2_e2ee_session_key::'));
-    final secret = sha256.convert(combined).toString();
-    debugPrint('[E2EE DEBUG] deriveSharedSecret: myPub=${myPublicKey.substring(0, 10)}..., remotePub=${remotePublicKey.substring(0, 10)}..., secret=${secret.substring(0, 10)}...');
-    return secret;
+  /// Drops cached key material for a peer. Call on unpair.
+  void forgetPeer(String remoteKexPublicKey) {
+    _sessionKeys.remove(remoteKexPublicKey);
+    _seenNonces.remove(remoteKexPublicKey);
   }
 
-  /// Encrypts plaintext payload using AES/HMAC Double Ratchet block.
-  String encryptPayload(String plaintext, String remotePublicKey) {
-    debugPrint('[E2EE ENCRYPT] Encrypting payload for remotePub=${remotePublicKey.substring(0, 10)}...');
-    final sharedSecret = deriveSharedSecret(remotePublicKey);
-    final keyBytes = utf8.encode(sharedSecret);
-    final textBytes = utf8.encode(plaintext);
+  /// Encrypts [plaintext] for the holder of [remoteKexPublicKey].
+  ///
+  /// [aad] must be the canonical envelope header (see C2Message.signingBytes);
+  /// decryption only succeeds if the receiver reconstructs the identical header,
+  /// which binds the ciphertext to its sender, recipient, type and timestamp.
+  Future<String> encryptPayload(
+    String plaintext,
+    String remoteKexPublicKey, {
+    required List<int> aad,
+  }) async {
+    final key = await _sessionKey(remoteKexPublicKey);
+    final nonce = _aead.newNonce();
 
-    // XOR cipher stream + HMAC integrity authentication
-    final cipher = List<int>.generate(textBytes.length, (i) {
-      return textBytes[i] ^ keyBytes[i % keyBytes.length];
-    });
+    final box = await _aead.encrypt(
+      utf8.encode(plaintext),
+      secretKey: key,
+      nonce: nonce,
+      aad: aad,
+    );
 
-    final hmac = Hmac(sha256, keyBytes);
-    final mac = hmac.convert(cipher);
-
-    final payload = {
-      'c': base64Encode(cipher),
-      'm': mac.toString(),
-      't': DateTime.now().millisecondsSinceEpoch,
-    };
-
-    return base64Encode(utf8.encode(jsonEncode(payload)));
+    return base64Encode(utf8.encode(jsonEncode({
+      'v': 2,
+      'n': base64Encode(box.nonce),
+      'c': base64Encode(box.cipherText),
+      'm': base64Encode(box.mac.bytes),
+    })));
   }
 
-  /// Decrypts ciphertext envelope and verifies HMAC payload integrity.
-  String decryptPayload(String encryptedBody, String remotePublicKey) {
+  /// Decrypts and authenticates a payload from the holder of [remoteKexPublicKey].
+  ///
+  /// Throws [DecryptionFailure] on any tampering, malformed input, or replay.
+  /// There is deliberately no "looks like plaintext, pass it through" path here:
+  /// every branch of the caller must handle authenticated data only.
+  Future<String> decryptPayload(
+    String encryptedBody,
+    String remoteKexPublicKey, {
+    required List<int> aad,
+  }) async {
+    final Map<String, dynamic> payload;
     try {
-      if (encryptedBody.trimLeft().startsWith('{') && encryptedBody.contains('"action"')) {
-        return encryptedBody; // Plaintext system control payload
-      }
-      debugPrint('[E2EE DECRYPT] Decrypting payload from remotePub=${remotePublicKey.substring(0, remotePublicKey.length >= 10 ? 10 : remotePublicKey.length)}...');
-      final jsonStr = utf8.decode(base64Decode(encryptedBody));
-      final Map<String, dynamic> payload = jsonDecode(jsonStr);
+      payload = jsonDecode(utf8.decode(base64Decode(encryptedBody))) as Map<String, dynamic>;
+    } catch (_) {
+      throw const DecryptionFailure('malformed ciphertext envelope');
+    }
 
-      final cipherBytes = base64Decode(payload['c']);
-      final expectedMac = payload['m'];
+    if (payload['v'] != 2) {
+      throw const DecryptionFailure('unsupported ciphertext version');
+    }
 
-      final sharedSecret = deriveSharedSecret(remotePublicKey);
-      final keyBytes = utf8.encode(sharedSecret);
+    final Uint8List nonce, cipherText, mac;
+    try {
+      nonce = base64Decode(payload['n'] as String);
+      cipherText = base64Decode(payload['c'] as String);
+      mac = base64Decode(payload['m'] as String);
+    } catch (_) {
+      throw const DecryptionFailure('malformed ciphertext fields');
+    }
 
-      final hmac = Hmac(sha256, keyBytes);
-      final computedMac = hmac.convert(cipherBytes).toString();
+    final nonceKey = base64Encode(nonce);
+    final seen = _seenNonces.putIfAbsent(remoteKexPublicKey, () => <String>{});
+    if (seen.contains(nonceKey)) {
+      throw const DecryptionFailure('replayed nonce');
+    }
 
-      if (computedMac != expectedMac) {
-        debugPrint('[E2EE ERROR] MAC Mismatch! expected=$expectedMac, computed=$computedMac');
-        throw Exception('E2EE HMAC verification failed: Ciphertext tampered!');
-      }
+    final key = await _sessionKey(remoteKexPublicKey);
+    final List<int> clear;
+    try {
+      clear = await _aead.decrypt(
+        SecretBox(cipherText, nonce: nonce, mac: Mac(mac)),
+        secretKey: key,
+        aad: aad,
+      );
+    } on SecretBoxAuthenticationError {
+      throw const DecryptionFailure('authentication tag mismatch');
+    } catch (_) {
+      throw const DecryptionFailure('decryption error');
+    }
 
-      final plainBytes = List<int>.generate(cipherBytes.length, (i) {
-        return cipherBytes[i] ^ keyBytes[i % keyBytes.length];
-      });
+    // Only remember nonces that authenticated, so junk traffic cannot grow this set.
+    seen.add(nonceKey);
+    if (seen.length > 2048) {
+      // Bounded window. Ordering is insertion-based, so drop the oldest quarter.
+      final drop = seen.take(512).toList();
+      seen.removeAll(drop);
+    }
 
-      final decryptedText = utf8.decode(plainBytes);
-      debugPrint('[E2EE SUCCESS] Decrypted plaintext: "$decryptedText"');
-      return decryptedText;
-    } catch (e, stack) {
-      debugPrint('[E2EE EXCEPTION] Decryption Error: $e\n$stack');
-      return '[DECRYPTION ERROR: Invalid key or corrupted ciphertext]';
+    try {
+      return utf8.decode(clear);
+    } catch (_) {
+      throw const DecryptionFailure('plaintext is not valid UTF-8');
     }
   }
 
-  /// Computes Safety Number fingerprint for out-of-band contact verification (QR Code).
-  static String computeSafetyNumber(String pubKeyA, String pubKeyB) {
-    final sortedKeys = [pubKeyA, pubKeyB]..sort();
-    final combined = sha256.convert(utf8.encode(sortedKeys.join('-'))).toString();
-    final numStr = combined.replaceAll(RegExp(r'[^0-9]'), '7');
-    final p1 = numStr.substring(0, 5);
-    final p2 = numStr.substring(5, 10);
-    final p3 = numStr.substring(10, 15);
-    final p4 = numStr.substring(15, 20);
-    return '$p1-$p2-$p3-$p4';
+  /// Safety number for out-of-band verification, over both identity keys.
+  ///
+  /// 60 decimal digits in 5-digit groups, read off the full SHA-256 of the
+  /// sorted signing keys. Every digit carries entropy — the previous version
+  /// collapsed hex letters to a constant, which silently destroyed most of it.
+  static String computeSafetyNumber(String signPubKeyA, String signPubKeyB) {
+    final sorted = [signPubKeyA, signPubKeyB]..sort();
+    final digest = hashing.sha256.convert(utf8.encode(sorted.join('|')));
+
+    final digits = StringBuffer();
+    for (final byte in digest.bytes) {
+      digits.write(byte.toString().padLeft(3, '0'));
+    }
+
+    final groups = <String>[];
+    for (var i = 0; i + 5 <= 60; i += 5) {
+      groups.add(digits.toString().substring(i, i + 5));
+    }
+    return groups.join(' ');
   }
 }

@@ -1,20 +1,24 @@
 import 'dart:convert';
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+
 import '../../models/operator_profile.dart';
+import '../../services/secure_channel.dart';
 import '../theme/c2_colors.dart';
 
 class QrPairingView extends StatefulWidget {
   final OperatorProfile myProfile;
-  final List<String> meshNodeUrls;
+  final SecureChannel channel;
   final Function(OperatorProfile, String tokenId) onContactAdded;
 
   const QrPairingView({
     super.key,
     required this.myProfile,
-    required this.meshNodeUrls,
+    required this.channel,
     required this.onContactAdded,
   });
 
@@ -32,22 +36,24 @@ class _QrPairingViewState extends State<QrPairingView> {
     _regenerateToken();
   }
 
+  /// Generates an unpredictable single-use pairing token.
+  ///
+  /// The old form was `tok-<millis>-<id.hashCode>`, which anyone who knew the
+  /// operator ID could reproduce for any moment in time — so the "code already
+  /// used" check it fed could be sidestepped by minting a fresh-looking one.
   void _regenerateToken() {
+    final rnd = Random.secure();
+    final bytes = List<int>.generate(16, (_) => rnd.nextInt(256));
     setState(() {
-      _currentTokenId = 'tok-${DateTime.now().millisecondsSinceEpoch}-${widget.myProfile.id.hashCode}';
+      _currentTokenId = 'tok-${base64Url.encode(bytes)}';
     });
   }
 
+  /// The pairing payload carries public keys only. Mesh node URLs are no longer
+  /// included: they told a scanner where a squad's infrastructure lives, and
+  /// the receiving device already has its own configured seeds.
   String get _pairingPayload {
-    final payload = {
-      'c2_version': '1.0',
-      'token_id': _currentTokenId,
-      'operator_id': widget.myProfile.id,
-      'callsign': widget.myProfile.callsign,
-      'name': widget.myProfile.name,
-      'public_key': widget.myProfile.publicKey,
-      'mesh_nodes': widget.meshNodeUrls,
-    };
+    final payload = widget.channel.pairingPayload(widget.myProfile, _currentTokenId);
     return 'c2://pair?data=${base64Encode(utf8.encode(jsonEncode(payload)))}';
   }
 
@@ -91,18 +97,14 @@ class _QrPairingViewState extends State<QrPairingView> {
       final rawJson = utf8.decode(base64Decode(base64Data));
       final Map<String, dynamic> data = jsonDecode(rawJson);
 
-      final tokenId = data['token_id'] ?? 'legacy-tok';
+      final tokenId = (data['token_id'] as String?) ?? '';
 
-      final newProfile = OperatorProfile(
-        id: data['operator_id'] ?? 'op-${DateTime.now().millisecondsSinceEpoch}',
-        callsign: data['callsign'] ?? 'OPERATOR',
-        name: data['name'] ?? 'Unknown',
-        role: OperatorRole.operator,
-        avatarBase64: '',
-        publicKey: data['public_key'] ?? '',
-        lastSeen: DateTime.now(),
-        isOnline: true,
-      );
+      // Rejects any payload whose operator ID is not derived from the signing
+      // key it ships, and any pre-v2 code that carries no identity keys at all.
+      final newProfile = SecureChannel.contactFromPairingPayload(data);
+      if (newProfile == null) {
+        throw const FormatException('pairing code has no verifiable identity keys');
+      }
 
       if (newProfile.id == widget.myProfile.id) {
         _lastScannedPayload = text;
@@ -195,7 +197,7 @@ class _QrPairingViewState extends State<QrPairingView> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
-              color: Colors.amber.withOpacity(0.2),
+              color: Colors.amber.withValues(alpha: 0.2),
               borderRadius: BorderRadius.circular(6),
               border: Border.all(color: Colors.amberAccent),
             ),
@@ -219,7 +221,7 @@ class _QrPairingViewState extends State<QrPairingView> {
               borderRadius: BorderRadius.circular(16),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.cyan.withOpacity(0.3),
+                  color: Colors.cyan.withValues(alpha: 0.3),
                   blurRadius: 20,
                   spreadRadius: 2,
                 ),

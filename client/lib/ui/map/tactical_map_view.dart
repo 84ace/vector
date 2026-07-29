@@ -28,6 +28,10 @@ class TacticalMapView extends StatefulWidget {
   final Function(OperatorProfile)? onOpenChat;
   final String? activeSosOperatorCallsign;
 
+  /// Raises the distress beacon. Lives on the map because this is the screen
+  /// that already carries position and situational awareness.
+  final VoidCallback? onTriggerSos;
+
   const TacticalMapView({
     super.key,
     required this.myProfile,
@@ -43,6 +47,7 @@ class TacticalMapView extends StatefulWidget {
     this.onStartVideoCall,
     this.onOpenChat,
     this.activeSosOperatorCallsign,
+    this.onTriggerSos,
   });
 
   @override
@@ -173,10 +178,10 @@ class _TacticalMapViewState extends State<TacticalMapView> {
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                 decoration: BoxDecoration(
-                  color: Colors.red.withOpacity(0.95),
+                  color: Colors.red.withValues(alpha: 0.95),
                   borderRadius: BorderRadius.circular(8),
                   boxShadow: [
-                    BoxShadow(color: Colors.redAccent.withOpacity(0.6), blurRadius: 16, spreadRadius: 4),
+                    BoxShadow(color: Colors.redAccent.withValues(alpha: 0.6), blurRadius: 16, spreadRadius: 4),
                   ],
                 ),
                 child: Row(
@@ -215,9 +220,9 @@ class _TacticalMapViewState extends State<TacticalMapView> {
                 // Single Unified Tactical Layer Management Button
                 Container(
                   decoration: BoxDecoration(
-                    color: const Color(0xFF0F172A).withOpacity(0.9),
+                    color: const Color(0xFF0F172A).withValues(alpha: 0.9),
                     shape: BoxShape.circle,
-                    border: Border.all(color: Colors.cyanAccent.withOpacity(0.5)),
+                    border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.5)),
                   ),
                   child: IconButton(
                     icon: const Icon(Icons.layers, color: Colors.cyanAccent, size: 20),
@@ -273,28 +278,49 @@ class _TacticalMapViewState extends State<TacticalMapView> {
               ),
             ),
 
-          // Map Action Buttons (Recenter)
+          // Map controls: recenter, and the distress beacon beneath it.
           Positioned(
             right: 12,
             bottom: _activeVector != null ? 140 : 24,
-            child: FloatingActionButton.small(
-              heroTag: 'fab_my_loc',
-              backgroundColor: const Color(0xFF0F172A),
-              foregroundColor: Colors.cyanAccent,
-              onPressed: () {
-                if (myPos != null) {
-                  _mapController.move(myPos, 16.0);
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      backgroundColor: Colors.amberAccent,
-                      duration: Duration(seconds: 2),
-                      content: Text('ACQUIRING GPS FIX...', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
-                    ),
-                  );
-                }
-              },
-              child: const Icon(Icons.my_location),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                FloatingActionButton.small(
+                  heroTag: 'fab_my_loc',
+                  backgroundColor: const Color(0xFF0F172A),
+                  foregroundColor: Colors.cyanAccent,
+                  tooltip: 'Centre on my position',
+                  onPressed: () {
+                    if (myPos != null) {
+                      _mapController.move(myPos, 16.0);
+                    } else {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          backgroundColor: Colors.amberAccent,
+                          duration: Duration(seconds: 2),
+                          content: Text('ACQUIRING GPS FIX...', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                        ),
+                      );
+                    }
+                  },
+                  child: const Icon(Icons.my_location),
+                ),
+                if (widget.onTriggerSos != null) ...[
+                  const SizedBox(height: 12),
+                  // Deliberately separated from the other controls and clearly
+                  // labelled: this broadcasts a distress beacon to the whole
+                  // squad, and it used to sit in the navigation bar where a
+                  // mis-tap could reach it.
+                  FloatingActionButton.extended(
+                    heroTag: 'fab_sos',
+                    backgroundColor: Colors.red,
+                    foregroundColor: Colors.white,
+                    icon: const Icon(Icons.warning_amber_rounded),
+                    label: const Text('SOS', style: TextStyle(fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+                    onPressed: widget.onTriggerSos,
+                  ),
+                ],
+              ],
             ),
           ),
         ],
@@ -311,7 +337,7 @@ class _TacticalMapViewState extends State<TacticalMapView> {
           Polyline(
             points: points,
             strokeWidth: 2.0,
-            color: Colors.cyanAccent.withOpacity(0.4),
+            color: Colors.cyanAccent.withValues(alpha: 0.4),
           ),
         );
       }
@@ -610,7 +636,7 @@ class _TacticalMapViewState extends State<TacticalMapView> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: const Color(0xFF0F172A).withOpacity(0.9),
+        color: const Color(0xFF0F172A).withValues(alpha: 0.9),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: color),
       ),

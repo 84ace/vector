@@ -18,12 +18,12 @@ class VectoringToolWidget extends StatelessWidget {
       margin: const EdgeInsets.all(12),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFF0F172A).withOpacity(0.92),
+        color: const Color(0xFF0F172A).withValues(alpha: 0.92),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.cyanAccent.withOpacity(0.5), width: 1.5),
+        border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.5), width: 1.5),
         boxShadow: [
           BoxShadow(
-            color: Colors.cyanAccent.withOpacity(0.2),
+            color: Colors.cyanAccent.withValues(alpha: 0.2),
             blurRadius: 12,
             spreadRadius: 2,
           )

@@ -12,6 +12,15 @@ services:
     environment:
       - PORT=8080
       - NODE_ID=nas-local-node-8080
+      # Serve wss:// by mounting a certificate and pointing these at it. Without
+      # TLS the node still cannot read message bodies, but routing metadata —
+      # who is talking to whom, and when — is exposed to the network path.
+      # - TLS_CERT_FILE=/certs/fullchain.pem
+      # - TLS_KEY_FILE=/certs/privkey.pem
+      # Only needed if browser clients connect; native clients send no Origin.
+      # - ALLOWED_ORIGINS=https://c2.example.com
+    # volumes:
+    #   - ./certs:/certs:ro
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
       interval: 15s

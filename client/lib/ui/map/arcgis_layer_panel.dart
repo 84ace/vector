@@ -241,7 +241,7 @@ class _TacticalLayerPanelState extends State<TacticalLayerPanel> {
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 12),
           decoration: BoxDecoration(
-            color: isSelected ? Colors.cyan.withOpacity(0.2) : C2Colors.slateCard,
+            color: isSelected ? Colors.cyan.withValues(alpha: 0.2) : C2Colors.slateCard,
             borderRadius: BorderRadius.circular(8),
             border: Border.all(
               color: isSelected ? Colors.cyanAccent : Colors.white12,

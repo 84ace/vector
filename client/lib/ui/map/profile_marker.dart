@@ -44,7 +44,7 @@ class ProfileMarkerWidget extends StatelessWidget {
             child: Icon(
               Icons.navigation,
               size: 48,
-              color: _statusColor.withOpacity(0.6),
+              color: _statusColor.withValues(alpha: 0.6),
             ),
           ),
 
@@ -60,7 +60,7 @@ class ProfileMarkerWidget extends StatelessWidget {
               ),
               boxShadow: [
                 BoxShadow(
-                  color: _statusColor.withOpacity(0.4),
+                  color: _statusColor.withValues(alpha: 0.4),
                   blurRadius: isSelected ? 10 : 6,
                   spreadRadius: isSelected ? 3 : 1,
                 ),
@@ -83,7 +83,7 @@ class ProfileMarkerWidget extends StatelessWidget {
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
               decoration: BoxDecoration(
-                color: const Color(0xFF0F172A).withOpacity(0.9),
+                color: const Color(0xFF0F172A).withValues(alpha: 0.9),
                 borderRadius: BorderRadius.circular(4),
                 border: Border.all(color: _statusColor, width: 1),
               ),
