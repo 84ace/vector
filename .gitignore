@@ -7,6 +7,13 @@
 *.key
 *.secret
 
+# Provisioned TLS material. ca.key in particular can mint a certificate for any
+# node, so nothing under here belongs in version control. Scoped to the
+# provisioning directory rather than a global *.crt, which would silently
+# swallow a test fixture.
+backend/certs/
+certs/
+
 # macOS
 .DS_Store
 

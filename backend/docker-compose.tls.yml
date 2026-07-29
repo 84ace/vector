@@ -1,0 +1,39 @@
+# TLS overlay for the relay node.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.tls.yml up -d
+#
+# Expects ./certs/node.crt and ./certs/node.key — see scripts/make-internal-ca.sh
+# for an isolated deployment, or drop a publicly-trusted certificate there for a
+# node with a real DNS name. Full walkthrough in ../DEPLOYMENT.md.
+services:
+  vector-c2-backend:
+    # !override replaces the base list instead of appending to it. Without it
+    # 8080 stays published with nothing listening behind it, because PORT below
+    # moves the node to 8443.
+    ports: !override
+      - "8443:8443"
+    environment:
+      - PORT=8443
+      - TLS_CERT_FILE=/certs/node.crt
+      - TLS_KEY_FILE=/certs/node.key
+      # Only needed if browser clients connect; native clients send no Origin.
+      # - ALLOWED_ORIGINS=https://c2.example.com
+    volumes:
+      - ./certs:/certs:ro
+    # The base healthcheck probes http:// and would fail against a TLS listener,
+    # marking the container unhealthy and restart-looping a node that is fine.
+    #
+    # --no-check-certificate is correct here and not a weakening: this runs
+    # inside the container against its own listener to prove the process is
+    # alive. It authenticates nothing, and no client trust decision is involved.
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - --spider
+        - -q
+        - --no-check-certificate
+        - https://localhost:8443/health
+      interval: 15s
+      timeout: 3s
+      retries: 3

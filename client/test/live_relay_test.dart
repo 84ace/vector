@@ -22,6 +22,16 @@ import 'package:vector_c2/services/secure_channel.dart';
 void main() {
   final relayUrl = Platform.environment['RELAY_URL'];
 
+  // Point RELAY_CA_FILE at the issuing CA (or the self-signed certificate
+  // itself) to exercise the wss:// path. Without it only the platform root
+  // store is trusted, which is the correct behaviour for a public deployment
+  // but rejects the certificate an isolated node would present.
+  final caFile = Platform.environment['RELAY_CA_FILE'];
+  final trustContext = caFile == null || caFile.isEmpty
+      ? null
+      : (SecurityContext(withTrustedRoots: true)
+        ..setTrustedCertificates(caFile));
+
   // Deliberately no TestWidgetsFlutterBinding here: it installs an HttpOverrides
   // that fails every real request, and this suite needs genuine sockets. Nothing
   // under test touches secure storage — identities are ephemeral and the team
@@ -42,8 +52,16 @@ void main() {
     final alice = await OperatorIdentity.forTesting();
     final bob = await OperatorIdentity.forTesting();
 
-    final aliceClient = MeshClient(identity: alice, seedNodeUrls: [relayUrl!]);
-    final bobClient = MeshClient(identity: bob, seedNodeUrls: [relayUrl]);
+    final aliceClient = MeshClient(
+      identity: alice,
+      seedNodeUrls: [relayUrl!],
+      trustContext: trustContext,
+    );
+    final bobClient = MeshClient(
+      identity: bob,
+      seedNodeUrls: [relayUrl],
+      trustContext: trustContext,
+    );
 
     final aliceUp = aliceClient.connectionState.firstWhere((c) => c);
     final bobUp = bobClient.connectionState.firstWhere((c) => c);
@@ -94,8 +112,14 @@ void main() {
 
   test('the relay refuses a client that cannot sign its challenge', () async {
     final uri = Uri.parse(relayUrl!);
+    // Follow the scheme of RELAY_URL. This was hardcoded to ws://, so pointing
+    // the suite at a TLS node failed with "not upgraded to websocket, HTTP
+    // status code: 400" — the node was fine, the test was talking plaintext
+    // at a TLS listener.
+    final wsScheme = uri.scheme == 'https' ? 'wss' : 'ws';
     final socket = await WebSocket.connect(
-      'ws://${uri.host}:${uri.port}/ws',
+      '$wsScheme://${uri.host}:${uri.port}/ws',
+      customClient: trustContext == null ? null : (HttpClient(context: trustContext)),
     ).timeout(const Duration(seconds: 10));
 
     final frames = StreamQueue<dynamic>(socket);

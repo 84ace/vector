@@ -109,6 +109,24 @@ additionally refuse peers that are not already paired contacts.
 Set `TLS_CERT_FILE` and `TLS_KEY_FILE` to serve `wss://`. The node logs a warning
 at startup when it is not configured.
 
+**The client refuses plaintext where it would matter.** Rather than a flag nobody
+remembers to set, the decision follows the node's address: `https://` is accepted
+anywhere, and plaintext only to loopback or a private-network address. A routable
+plaintext node is skipped and the reason is written to the operator's event log —
+silently dropping it made a misconfiguration look identical to an outage. Build
+with `TRANSPORT_POLICY=tls-only` to require TLS on the LAN too.
+
+Classification is syntactic, with no DNS lookup, so whoever answers the query
+cannot influence it. A dotted name therefore counts as routable even if it
+resolves to a LAN address; `TRANSPORT_POLICY=any` exists for split-horizon DNS.
+
+An isolated network cannot obtain a publicly-trusted certificate, so an internal
+CA can be pinned into the build with `RELAY_CA_PEM_BASE64`, alongside — not
+instead of — the platform roots. It has to be pinned into the process: the
+client's `dart:io` transport consults neither an iOS profile nor Android's user
+certificate store. A CA that will not parse is fatal at startup, by the same
+reasoning as a missing keystore. See `DEPLOYMENT.md`.
+
 ## Pairing
 
 1. Operator A scans B's QR code. This is the out-of-band step: it carries B's

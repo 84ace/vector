@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' show SecurityContext;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -19,6 +20,7 @@ import 'services/p2p_mesh_engine.dart';
 import 'services/ptt_audio_service.dart';
 import 'services/secure_channel.dart';
 import 'services/telemetry_service.dart';
+import 'services/transport_policy.dart';
 import 'services/webrtc_call_service.dart';
 import 'services/ptt_recorder.dart';
 import 'ui/chat/audience_selector.dart';
@@ -115,6 +117,7 @@ class _MainShellViewState extends State<MainShellView> {
   /// Set when the device cannot provide secure key storage. The app stops here
   /// rather than starting up with keys it could not protect.
   SecureStorageUnavailable? _storageFailure;
+  RelayTrustAnchorInvalid? _trustAnchorFailure;
   OperatorProfile? _activeCallPeer;
 
   late OperatorIdentity _identity;
@@ -144,6 +147,20 @@ class _MainShellViewState extends State<MainShellView> {
   static const String _fieldRouterEnv =
       String.fromEnvironment('FIELD_ROUTER_NODE_URL', defaultValue: '');
 
+  /// Transport strictness, baked in at build time alongside the seed URLs.
+  ///
+  /// Configured the same way as everything else here rather than as a runtime
+  /// toggle: the previous `require_tls` preference defaulted to false and no
+  /// screen ever wrote it, so the check it guarded could never fire.
+  static const String _transportPolicyEnv =
+      String.fromEnvironment('TRANSPORT_POLICY', defaultValue: 'private');
+
+  /// Base64 PEM of a CA to trust for relay certificates, on top of the platform
+  /// roots. Needed for wss:// on an isolated network, which has no way to obtain
+  /// a publicly-trusted certificate. See DEPLOYMENT.md.
+  static const String _relayCaPemEnv =
+      String.fromEnvironment('RELAY_CA_PEM_BASE64', defaultValue: '');
+
   /// Seed nodes come from --dart-define at build time. Nothing is hardcoded to a
   /// specific deployment any more: a build with no defines only tries localhost.
   List<String> get candidateMeshNodes => [
@@ -152,6 +169,27 @@ class _MainShellViewState extends State<MainShellView> {
         _localNodeEnv,
         _fieldRouterEnv,
       ].where((url) => url.isNotEmpty).toList();
+
+  /// Maps the build-time define onto a policy, defaulting to the safe end.
+  ///
+  /// An unrecognised value falls back to the default rather than the permissive
+  /// end, so a typo in a deploy script cannot be what turns metadata protection
+  /// off. Returns null when the value was not understood, so the caller can say
+  /// so in the event log.
+  static TransportPolicy? _parseTransportPolicy(String raw) {
+    switch (raw.trim().toLowerCase()) {
+      case 'private':
+        return TransportPolicy.privateNetworkPlaintext;
+      case 'tls-only':
+      case 'tls_only':
+        return TransportPolicy.tlsOnly;
+      case 'any':
+      case 'insecure':
+        return TransportPolicy.allowAllPlaintext;
+      default:
+        return null;
+    }
+  }
 
   @override
   void initState() {
@@ -297,11 +335,40 @@ class _MainShellViewState extends State<MainShellView> {
 
     await prefs.setString('c2_my_profile', jsonEncode(_myProfile.toJson()));
 
+    // A CA that will not parse is fatal for the same reason a missing keystore
+    // is: continuing on platform roots alone would leave every pinned node
+    // looking unreachable, with nothing on screen saying why.
+    final SecurityContext? relayTrust;
+    try {
+      relayTrust = relayTrustContext(_relayCaPemEnv);
+    } on RelayTrustAnchorInvalid catch (e) {
+      debugPrint('[STARTUP] Relay CA invalid: ${e.detail}');
+      if (mounted) {
+        setState(() {
+          _trustAnchorFailure = e;
+          _isLoading = false;
+        });
+      }
+      return;
+    }
+
     _meshClient = MeshClient(
       identity: _identity,
       seedNodeUrls: candidateMeshNodes,
-      requireSecureTransport: prefs.getBool('require_tls') ?? false,
+      transportPolicy: _parseTransportPolicy(_transportPolicyEnv) ??
+          TransportPolicy.privateNetworkPlaintext,
+      trustContext: relayTrust,
     );
+
+    if (_parseTransportPolicy(_transportPolicyEnv) == null) {
+      _addEventLog(
+        'UNKNOWN TRANSPORT_POLICY VALUE',
+        'Build defines TRANSPORT_POLICY="$_transportPolicyEnv", which is not one '
+            'of private / tls-only / any. Falling back to "private": plaintext is '
+            'permitted on the local network only.',
+        EventSeverity.warning,
+      );
+    }
 
     _p2pMeshEngine = P2PMeshEngine(
       identity: _identity,
@@ -369,6 +436,13 @@ class _MainShellViewState extends State<MainShellView> {
         if (connected) _retryPendingPairRequests();
       }),
       _meshClient.incomingMessages.listen(_processIncomingMessage),
+      // A seed refused for offering plaintext is otherwise indistinguishable
+      // from one that is simply down, which turns a misconfigured deployment
+      // into an unexplained outage.
+      _meshClient.transportRefusals.listen((detail) {
+        if (!mounted) return;
+        _addEventLog('NODE SKIPPED: INSECURE TRANSPORT', detail, EventSeverity.security);
+      }),
       _p2pMeshEngine.incomingP2PMessages.listen(_processIncomingMessage),
       _p2pMeshEngine.discoveredPeers.listen((peers) {
         if (!mounted) return;
@@ -1493,6 +1567,9 @@ class _MainShellViewState extends State<MainShellView> {
     final failure = _storageFailure;
     if (failure != null) return _buildStorageFailureScreen(failure);
 
+    final trustFailure = _trustAnchorFailure;
+    if (trustFailure != null) return _buildTrustAnchorFailureScreen(trustFailure);
+
     if (_isLoading) {
       return const Scaffold(
         backgroundColor: C2Colors.slateBg,
@@ -1755,6 +1832,68 @@ class _MainShellViewState extends State<MainShellView> {
                   });
                   _loadPersistedState();
                 },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Shown when RELAY_CA_PEM_BASE64 will not parse.
+  ///
+  /// Deliberately offers no RETRY: the CA is a compile-time constant, so
+  /// nothing an operator can do on the device changes the outcome. Starting
+  /// anyway would silently fall back to platform roots and make every pinned
+  /// node look unreachable.
+  Widget _buildTrustAnchorFailureScreen(RelayTrustAnchorInvalid failure) {
+    return Scaffold(
+      backgroundColor: C2Colors.slateBg,
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.gpp_bad_outlined, color: Colors.redAccent, size: 64),
+              const SizedBox(height: 20),
+              const Text(
+                'RELAY CA IS INVALID',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.0,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                failure.detail,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.5),
+              ),
+              const SizedBox(height: 20),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: C2Colors.slateCard,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.amberAccent.withValues(alpha: 0.4)),
+                ),
+                child: const Text(
+                  'Rebuild with a correct --dart-define=RELAY_CA_PEM_BASE64, or omit '
+                  'it to use the platform root store. See DEPLOYMENT.md.',
+                  style: TextStyle(color: Colors.amberAccent, fontSize: 12, height: 1.5),
+                ),
+              ),
+              const SizedBox(height: 24),
+              const Text(
+                'This build pins a relay certificate authority that cannot be read. '
+                'Continuing would leave every pinned node looking unreachable with '
+                'no indication why, so it is refused instead.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white38, fontSize: 11, height: 1.5),
               ),
             ],
           ),

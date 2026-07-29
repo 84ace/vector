@@ -1,13 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
+import 'package:http/io_client.dart' as http_io;
+import 'package:web_socket_channel/io.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../crypto/operator_identity.dart';
 import '../models/c2_message.dart';
+import 'transport_policy.dart';
 
 class NodePingResult {
   final String nodeId;
@@ -32,12 +35,27 @@ class MeshClient {
   final OperatorIdentity identity;
   final List<String> seedNodeUrls;
 
-  /// When true, refuse to connect to a node over plaintext ws://.
+  /// How much this client trusts an unencrypted transport.
   ///
   /// Envelope bodies are end-to-end encrypted either way, but plaintext
   /// transport exposes routing metadata — who is talking to whom, and when —
   /// which for this application is itself sensitive.
-  final bool requireSecureTransport;
+  ///
+  /// The default refuses plaintext to a routable host while still permitting it
+  /// on the LAN, because an isolated-network deployment has nowhere to get a
+  /// certificate from and that is the setup this app is built for. It is not a
+  /// flag anyone has to remember to turn on: the case that leaks metadata to
+  /// the internet is refused out of the box.
+  final TransportPolicy transportPolicy;
+
+  /// Additional trust anchor for relay certificates, or null for platform roots
+  /// only. See [relayTrustContext] for why an isolated deployment needs one.
+  final SecurityContext? trustContext;
+
+  /// One client for both the probe and the WebSocket upgrade, so they agree on
+  /// which certificates to trust and share a connection pool.
+  HttpClient? _httpClient;
+  http_io.IOClient? _probeClient;
 
   WebSocketChannel? _wsChannel;
   StreamSubscription? _wsSubscription;
@@ -49,9 +67,16 @@ class MeshClient {
 
   final _incomingMessagesController = StreamController<C2Message>.broadcast();
   final _connectionStateController = StreamController<bool>.broadcast();
+  final _transportRefusalController = StreamController<String>.broadcast();
+
+  /// Seed nodes skipped for offering an unacceptable transport. A silently
+  /// dropped seed looks identical to an unreachable one, which is how a
+  /// misconfigured deployment reads as "the node is down" for hours.
+  final Set<String> _reportedRefusals = {};
 
   Stream<C2Message> get incomingMessages => _incomingMessagesController.stream;
   Stream<bool> get connectionState => _connectionStateController.stream;
+  Stream<String> get transportRefusals => _transportRefusalController.stream;
 
   Timer? _probeTimer;
   Timer? _reconnectTimer;
@@ -67,8 +92,22 @@ class MeshClient {
   MeshClient({
     required this.identity,
     required this.seedNodeUrls,
-    this.requireSecureTransport = false,
+    this.transportPolicy = TransportPolicy.privateNetworkPlaintext,
+    this.trustContext,
   });
+
+  HttpClient get _client {
+    final existing = _httpClient;
+    if (existing != null) return existing;
+    final created = HttpClient(context: trustContext)
+      ..connectionTimeout = _probeTimeout;
+    _httpClient = created;
+    return created;
+  }
+
+  /// Wraps [_client] without owning it — closing this would close the client
+  /// the WebSocket upgrade also uses.
+  http_io.IOClient get _probe => _probeClient ??= http_io.IOClient(_client);
 
   String get myOperatorId => identity.operatorId;
 
@@ -95,6 +134,10 @@ class MeshClient {
     await stop();
     await _incomingMessagesController.close();
     await _connectionStateController.close();
+    await _transportRefusalController.close();
+    _probeClient = null;
+    _httpClient?.close(force: true);
+    _httpClient = null;
   }
 
   void _setConnected(bool connected) {
@@ -140,13 +183,14 @@ class MeshClient {
   Future<NodePingResult?> _probeNode(String baseUrl) async {
     try {
       final uri = Uri.parse(baseUrl);
-      if (requireSecureTransport && uri.scheme != 'https') {
-        debugPrint('[MESH_CLIENT] Skipping $baseUrl: plaintext transport is disabled');
+      if (!isTransportAllowed(baseUrl, transportPolicy)) {
+        _reportTransportRefusal(baseUrl);
         return null;
       }
 
       final stopwatch = Stopwatch()..start();
-      final response = await http.get(uri.replace(path: _joinPath(uri.path, 'ping'))).timeout(_probeTimeout);
+      final response =
+          await _probe.get(uri.replace(path: _joinPath(uri.path, 'ping'))).timeout(_probeTimeout);
       stopwatch.stop();
 
       if (response.statusCode != 200) return null;
@@ -163,8 +207,42 @@ class MeshClient {
         wsUrl: wsUri.toString(),
         latencyMs: stopwatch.elapsedMilliseconds,
       );
+    } on HandshakeException catch (e) {
+      // A rejected certificate is not an unreachable node, and conflating the
+      // two is how a TLS misconfiguration presents as hours of silent outage:
+      // the node is up, answering, and simply never selected. Say so instead.
+      _reportTlsFailure(baseUrl, e);
+      return null;
+    } on TlsException catch (e) {
+      _reportTlsFailure(baseUrl, e);
+      return null;
     } catch (_) {
       return null; // Node unreachable.
+    }
+  }
+
+  /// Announces a refused seed once. The probe timer fires every 30s, so
+  /// reporting on every tick would bury the operator's event log.
+  void _reportTransportRefusal(String baseUrl) {
+    final reason = transportRefusalReason(baseUrl, transportPolicy);
+    debugPrint('[MESH_CLIENT] Skipping $baseUrl: $reason');
+    _announceOnce(baseUrl, reason);
+  }
+
+  void _reportTlsFailure(String baseUrl, Object error) {
+    debugPrint('[MESH_CLIENT] TLS failure for $baseUrl: $error');
+    _announceOnce(
+      baseUrl,
+      'the node presented a certificate this device does not trust. Use a '
+          'publicly-trusted certificate, or pin the issuing CA with '
+          '--dart-define=RELAY_CA_PEM_BASE64=... (see DEPLOYMENT.md)',
+    );
+  }
+
+  void _announceOnce(String baseUrl, String reason) {
+    if (!_reportedRefusals.add(baseUrl)) return;
+    if (!_transportRefusalController.isClosed) {
+      _transportRefusalController.add('$baseUrl — $reason');
     }
   }
 
@@ -181,8 +259,22 @@ class MeshClient {
     _authenticated = false;
     final auth = _authCompleter = Completer<void>();
 
+    // This completer can be failed before anything awaits it: a host that
+    // accepts TCP and answers /ping but refuses the /ws upgrade — a captive
+    // portal, or a reverse proxy that forwards only HTTP — throws out of
+    // `channel.ready` below, and the catch block then errors the completer.
+    // Register a sink for that error up front, or it surfaces as an unhandled
+    // async exception instead of a reconnect.
+    unawaited(auth.future.catchError((Object _) {}));
+
     try {
-      final channel = WebSocketChannel.connect(Uri.parse(node.wsUrl));
+      // IOWebSocketChannel rather than WebSocketChannel.connect so the upgrade
+      // runs through the same HttpClient as the probe. Otherwise a pinned CA
+      // would satisfy /ping and then be unknown to the wss:// handshake.
+      final channel = IOWebSocketChannel.connect(
+        Uri.parse(node.wsUrl),
+        customClient: _client,
+      );
       await channel.ready.timeout(_authTimeout);
       _wsChannel = channel;
 
