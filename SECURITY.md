@@ -65,7 +65,8 @@ window, so a captured ciphertext cannot be replayed.
 A 256-bit random team key, generated on-device and exchanged with each contact
 inside the pairwise-encrypted `PAIR_ACK`. Epoch keys are HKDF-derived from it.
 Removing a contact rotates the key and distributes the new one pairwise to the
-members who remain.
+members who remain; each remaining member is tracked until it acknowledges the
+new epoch, and delivery is retried whenever a route to it reappears.
 
 ## Live calls (WebRTC)
 
@@ -175,9 +176,14 @@ did not have:
 - **Team key is shared.** Every paired member can read all team traffic. A
   removed member who kept an old epoch key can still read messages from that
   epoch — rotation only protects what comes after.
-- **Rotation is best-effort.** Members who are offline during a rekey do not get
-  the new key until they reconnect; the event log records when distribution was
-  incomplete.
+- **Rotation completes eventually, not immediately.** A member who is offline
+  during a rekey does not hold the new key until they reconnect, and until then
+  their team traffic will not decrypt. Delivery is now tracked per recipient and
+  re-attempted whenever a route to them appears, and a recipient is only cleared
+  once it acknowledges the epoch — a send accepted by a transport is not proof of
+  receipt. Obligations are persisted, so a rotation outlives the process that
+  performed it. What is still true: there is no guarantee about *when* an absent
+  operator catches up, and one who never returns stays behind forever.
 - **Metadata is visible to the relay.** It cannot read bodies, but it sees who
   talks to whom, when, and how much. TLS hides this from the network path, not
   from the node operator.

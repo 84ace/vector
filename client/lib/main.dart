@@ -19,6 +19,7 @@ import 'services/mesh_client.dart';
 import 'services/p2p_mesh_engine.dart';
 import 'services/ptt_audio_service.dart';
 import 'services/secure_channel.dart';
+import 'services/team_key_distributor.dart';
 import 'services/telemetry_service.dart';
 import 'services/transport_policy.dart';
 import 'services/webrtc_call_service.dart';
@@ -129,6 +130,7 @@ class _MainShellViewState extends State<MainShellView> {
   late TelemetryService _telemetryService;
   late PttRecorder _pttRecorder;
   late WebRtcCallService _callService;
+  late TeamKeyDistributor _teamKeyDistributor;
 
   final List<StreamSubscription> _subscriptions = [];
 
@@ -397,6 +399,27 @@ class _MainShellViewState extends State<MainShellView> {
       p2pMeshEngine: _p2pMeshEngine,
     );
 
+    _teamKeyDistributor = TeamKeyDistributor(
+      sendRekey: _sendTeamKeyTo,
+      lookupContact: _findContact,
+      currentEpoch: () => _teamEngine.epoch,
+      persist: _persistPendingRekeys,
+    );
+
+    // Obligations from a previous run resume now. A rotation that happened
+    // while a squad member was offline outlives the process that performed it.
+    final pendingRekeysJson = prefs.getString('c2_pending_rekeys');
+    if (pendingRekeysJson != null) {
+      try {
+        _teamKeyDistributor.restore(
+          (jsonDecode(pendingRekeysJson) as List<dynamic>).cast<String>(),
+        );
+      } catch (_) {
+        // Written by an incompatible build; the rotation will be re-driven by
+        // the next unpair rather than resumed.
+      }
+    }
+
     // A deployment that turned TURN on, or left public STUN on, should be able
     // to see that from inside the app rather than by reading the build script.
     for (final advisory in _callService.ice.advisories) {
@@ -439,7 +462,10 @@ class _MainShellViewState extends State<MainShellView> {
           _isMeshConnected = connected;
           _activeNodeId = connected ? (_meshClient.activeNodeId ?? 'mesh-node') : 'OFFLINE';
         });
-        if (connected) _retryPendingPairRequests();
+        if (connected) {
+          _retryPendingPairRequests();
+          _teamKeyDistributor.onRouteAvailable();
+        }
       }),
       _meshClient.incomingMessages.listen(_processIncomingMessage),
       // A seed refused for offering plaintext is otherwise indistinguishable
@@ -460,7 +486,13 @@ class _MainShellViewState extends State<MainShellView> {
         // A link to the peer we are waiting on may have just come up. This is
         // the event that actually delivers most pairing requests, because the
         // original send happens seconds before any link exists.
-        if (peers.isNotEmpty) _retryPendingPairRequests();
+        if (peers.isNotEmpty) {
+          _retryPendingPairRequests();
+          // A squad member that reappears on the LAN is the event that actually
+          // delivers most pending rekeys — the rotation typically happened while
+          // they were out of range.
+          _teamKeyDistributor.onRouteAvailable();
+        }
       }),
       _telemetryService.myTelemetry.listen((tele) {
         if (!mounted) return;
@@ -626,6 +658,28 @@ class _MainShellViewState extends State<MainShellView> {
           _addEventLog(
             'TEAM KEY ROTATED',
             'Adopted new team key (epoch $epoch) announced by ${sender.callsign}',
+            EventSeverity.info,
+          );
+        }
+        // Acknowledge unconditionally, reporting whatever epoch we now hold.
+        // adoptRekey refuses a key that is not strictly newer, and in that case
+        // we are already at or ahead of the sender — so an ack carrying our
+        // epoch is what stops them retrying forever.
+        if (secret != null && epoch != null) {
+          await _sendControl(sender, {
+            'action': 'GROUP_REKEY_ACK',
+            'group_epoch': _teamEngine.epoch,
+          }, idPrefix: 'rekeyack');
+        }
+
+      case 'GROUP_REKEY_ACK':
+        final ackedEpoch = control['group_epoch'];
+        if (ackedEpoch is int &&
+            await _teamKeyDistributor.acknowledge(sender.id, ackedEpoch)) {
+          _addEventLog(
+            'TEAM KEY CONFIRMED',
+            '${sender.callsign} confirmed team key epoch $ackedEpoch'
+                '${_teamKeyDistributor.hasPending ? '' : ' — all operators in sync'}',
             EventSeverity.info,
           );
         }
@@ -1004,32 +1058,42 @@ class _MainShellViewState extends State<MainShellView> {
 
     await _teamEngine.rotate();
 
-    var delivered = 0;
-    for (final member in remaining) {
-      final ok = await _sendControl(member, {
-        'action': 'GROUP_REKEY',
-        'group_secret': _teamEngine.groupSecret,
-        'group_epoch': _teamEngine.epoch,
-      }, idPrefix: 'rekey');
-      if (ok) delivered++;
-    }
+    final report = await _teamKeyDistributor.distributeToAll(remaining);
 
-    if (delivered < remaining.length) {
+    if (!report.isComplete) {
       _addEventLog(
         'TEAM KEY ROTATION INCOMPLETE',
-        'New team key reached $delivered of ${remaining.length} operators. '
-            'Those offline will re-sync when they reconnect; team traffic from '
-            'them may not decrypt until then.',
+        'New team key (epoch ${_teamEngine.epoch}) is unconfirmed for '
+            '${report.stillPending} of ${remaining.length} operators. Delivery '
+            'is retried whenever a route to them appears, and each is tracked '
+            'until it acknowledges.',
         EventSeverity.warning,
       );
     } else {
       _addEventLog(
         'TEAM KEY ROTATED',
-        'Rotated team key to epoch ${_teamEngine.epoch} and distributed to '
-            '$delivered operator(s)',
+        'Rotated team key to epoch ${_teamEngine.epoch} and confirmed with '
+            '${remaining.length} operator(s)',
         EventSeverity.info,
       );
     }
+  }
+
+  /// Sends the current team key to one contact. Wired into
+  /// [TeamKeyDistributor], which decides who needs it and when to retry.
+  Future<bool> _sendTeamKeyTo(OperatorProfile recipient) => _sendControl(
+        recipient,
+        {
+          'action': 'GROUP_REKEY',
+          'group_secret': _teamEngine.groupSecret,
+          'group_epoch': _teamEngine.epoch,
+        },
+        idPrefix: 'rekey',
+      );
+
+  Future<void> _persistPendingRekeys(Set<String> pending) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('c2_pending_rekeys', jsonEncode(pending.toList()));
   }
 
   /// Handles a verified unpair notice from a contact.
@@ -1062,6 +1126,8 @@ class _MainShellViewState extends State<MainShellView> {
 
     _pendingPairRequests.remove(opId);
     await _persistPendingPairRequests();
+    // No longer a contact, so there is no team key left to owe them.
+    await _teamKeyDistributor.forget(opId);
     _telemetryService.forgetOperator(opId);
     PttAudioService.forgetOperator(opId);
     if (removed != null) _pairwiseEngine.forgetPeer(removed.kexPublicKey);
@@ -1557,6 +1623,7 @@ class _MainShellViewState extends State<MainShellView> {
     _subscriptions.clear();
 
     if (_myProfileInitialized) {
+      _teamKeyDistributor.dispose();
       // Fire-and-forget: dispose() cannot await, but each of these closes its
       // own sockets, timers and stream controllers rather than leaking them.
       unawaited(PttAudioService.disposeGlobalListener());
@@ -1656,6 +1723,11 @@ class _MainShellViewState extends State<MainShellView> {
           // reading traffic addressed to the identity it just discarded.
           await OperatorIdentity.destroy();
           await TeamGroupEngine.destroy();
+
+          // prefs.clear() drops the persisted list, but the live distributor is
+          // still holding it in memory with a retry timer running. Onboarding
+          // builds a fresh one.
+          _teamKeyDistributor.dispose();
 
           setState(() {
             _myProfileInitialized = false;
