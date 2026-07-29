@@ -6,6 +6,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import '../models/c2_message.dart' as c2;
 import '../models/operator_profile.dart';
+import 'ice_configuration.dart';
 import 'mesh_client.dart';
 import 'p2p_mesh_engine.dart';
 import 'secure_channel.dart';
@@ -32,24 +33,45 @@ enum CallEndReason { hangup, declined, failed, peerGone }
 /// Push-to-talk clips still use the store-and-forward path, which is the right
 /// model for a message that must survive the recipient being offline.
 class WebRtcCallService {
-  /// Public STUN only. No TURN is configured, so a call between two peers that
-  /// are both behind symmetric NAT will fail to connect rather than silently
-  /// relaying media through a third party. Add a TURN server here if calls need
-  /// to work across arbitrary carrier networks.
-  static const List<Map<String, dynamic>> _iceServers = [
-    {'urls': 'stun:stun.l.google.com:19302'},
-    {'urls': 'stun:stun1.l.google.com:19302'},
-  ];
+  /// Public STUN, and no TURN unless a deployment asks for it.
+  ///
+  /// This is a deliberate default, not an omission: a call between two peers
+  /// both behind symmetric NAT fails visibly rather than silently relaying media
+  /// through a third party. Deployments that need calls across arbitrary carrier
+  /// networks configure TURN with --dart-define rather than editing this file,
+  /// so the trade is recorded where the deployment is described. What a TURN
+  /// relay learns is spelled out in IceConfiguration and in SECURITY.md.
+  static const String _stunServersEnv = String.fromEnvironment(
+    'STUN_SERVERS',
+    defaultValue: 'stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302',
+  );
+  static const String _turnUrlsEnv =
+      String.fromEnvironment('TURN_URLS', defaultValue: '');
+  static const String _turnUsernameEnv =
+      String.fromEnvironment('TURN_USERNAME', defaultValue: '');
+  static const String _turnCredentialEnv =
+      String.fromEnvironment('TURN_CREDENTIAL', defaultValue: '');
+
+  static IceConfiguration get iceConfiguration => IceConfiguration.fromDefines(
+        stunServers: _stunServersEnv,
+        turnUrls: _turnUrlsEnv,
+        turnUsername: _turnUsernameEnv,
+        turnCredential: _turnCredentialEnv,
+      );
 
   final SecureChannel channel;
   final MeshClient meshClient;
   final P2PMeshEngine p2pMeshEngine;
 
+  /// Overridable so tests can drive ICE configuration without a rebuild.
+  final IceConfiguration ice;
+
   WebRtcCallService({
     required this.channel,
     required this.meshClient,
     required this.p2pMeshEngine,
-  });
+    IceConfiguration? ice,
+  }) : ice = ice ?? iceConfiguration;
 
   RTCPeerConnection? _peer;
   MediaStream? _localStream;
@@ -271,7 +293,7 @@ class WebRtcCallService {
 
   Future<void> _createPeerConnection() async {
     _peer = await createPeerConnection({
-      'iceServers': _iceServers,
+      'iceServers': ice.toRtcIceServers(),
       'sdpSemantics': 'unified-plan',
       // Start gathering before there is an offer to attach candidates to.
       // Without this, gathering only begins at setLocalDescription and the

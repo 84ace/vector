@@ -397,6 +397,12 @@ class _MainShellViewState extends State<MainShellView> {
       p2pMeshEngine: _p2pMeshEngine,
     );
 
+    // A deployment that turned TURN on, or left public STUN on, should be able
+    // to see that from inside the app rather than by reading the build script.
+    for (final advisory in _callService.ice.advisories) {
+      _addEventLog('CALL PATH ADVISORY', advisory, EventSeverity.warning);
+    }
+
     await PttAudioService.initializeGlobalListener(
       meshClient: _meshClient,
       p2pMeshEngine: _p2pMeshEngine,

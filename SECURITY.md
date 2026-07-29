@@ -78,12 +78,28 @@ So the fingerprint exchange is authenticated against an identity that has
 already been proven: a relay that tampers with signalling breaks the envelope
 signature, and one that forwards it faithfully still cannot decrypt the media.
 
-Only public STUN servers are configured. There is **no TURN server**, which is a
-deliberate trade: a call between two peers behind symmetric NAT will fail to
-connect rather than silently relaying media through a third party. If calls need
-to work across arbitrary carrier networks, add TURN in
-`WebRtcCallService._iceServers` — and note that a TURN relay sees the encrypted
-media stream and both endpoints' addresses.
+**No TURN server is configured, and that is settled rather than pending.** A call
+between two peers both behind symmetric NAT — typically on different carrier
+networks — fails visibly rather than silently relaying media through a third
+party. The failure surfaces as a `CALL FAILED` event, not as a call that rings
+forever.
+
+A deployment that needs calls across arbitrary carrier networks can opt in with
+`--dart-define=TURN_URLS=…` (plus `TURN_USERNAME` and `TURN_CREDENTIAL`) instead
+of patching source, so the choice is recorded where the deployment is described.
+When TURN is enabled the app writes an advisory to the operator's event log
+naming the relay, because a TURN server sees **both endpoints' addresses and the
+full media stream**. The stream stays DTLS-SRTP encrypted end-to-end, so the
+relay cannot listen to the call — but it learns who called whom, for how long,
+and from where. STUN candidates are always offered ahead of relayed ones, so TURN
+carries a call only when nothing direct works.
+
+**Public STUN discloses the operator's address.** The defaults are Google's
+public STUN servers, so by default placing a call tells Google this device's IP.
+That, too, is written to the event log. Build with `--dart-define=STUN_SERVERS=`
+to disable STUN entirely — correct on an isolated network, where the public
+servers are unreachable anyway and host candidates carry the call — or point it
+at a STUN server you run.
 
 Push-to-talk clips still use the store-and-forward path, sealed the same way as
 messages: they have to survive the recipient being offline, which WebRTC cannot do.

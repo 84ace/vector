@@ -175,6 +175,39 @@ cd client && RELAY_URL=https://nas.local:8443 \
 Omitting `RELAY_CA_FILE` there should fail with a TLS diagnostic, not a timeout.
 A timeout means something other than trust is wrong.
 
+## Call path (WebRTC ICE)
+
+Call media is DTLS-SRTP directly between the two devices and never passes through
+the relay, so none of this affects confidentiality of the call itself. It only
+affects how a path between the two devices is found — and who learns about it.
+
+| Define | Default | Effect |
+|---|---|---|
+| `STUN_SERVERS` | Google's public STUN | Discovers the device's public address. Comma-separated; empty disables STUN. |
+| `TURN_URLS` | *empty* | Relays media when no direct path exists. Comma-separated. |
+| `TURN_USERNAME`, `TURN_CREDENTIAL` | *empty* | Long-term TURN credentials. |
+
+**TURN is off by default and that is a decision, not an omission.** A call between
+two peers both behind symmetric NAT fails visibly — a `CALL FAILED` event — rather
+than silently relaying media through a third party.
+
+If you enable it, understand what you are accepting: a TURN relay sees both
+endpoints' addresses and the full media stream. The stream stays encrypted
+end-to-end so the relay cannot listen to the call, but it learns who called whom,
+for how long, and from where. STUN candidates are always offered ahead of relayed
+ones, so TURN only carries a call when nothing direct works. The app writes an
+advisory naming the relay into the operator's event log.
+
+For an isolated deployment, turn STUN off as well:
+
+```bash
+flutter build apk --dart-define=STUN_SERVERS=
+```
+
+The public servers are unreachable on such a network anyway, and leaving them
+configured only adds candidate-gathering delay to every call. With STUN off,
+host candidates carry the call, which is all a LAN needs.
+
 ## Notes
 
 - `ALLOWED_ORIGINS` only matters for browser clients. Native clients send no
