@@ -241,6 +241,24 @@ did not have:
 - **Compromised endpoint.** Nothing here defends against a device an adversary
   controls.
 
+## Breaking change: the bundle identifier moved
+
+The app identifier changed from `com.tactical.c2.vectorC2` (Apple) and
+`com.tactical.c2.vector_c2` (Android — they had drifted apart) to a single
+`com.tactical.vector`.
+
+Keychain items are scoped to the bundle identifier, and Android's
+`EncryptedSharedPreferences` to the `applicationId`, so **the identity keys
+stored by an older build are unreachable to this one.** A device that upgrades
+generates a fresh keypair and therefore a fresh operator ID, and **all contacts
+must re-pair.** There is no migration path that does not involve copying private
+keys out of the keystore, which is not something this app does.
+
+The macOS `keychain-access-groups` entitlement has to name the same identifier;
+if it drifts, key generation fails with `-34018` and the app refuses to start.
+That entitlement was previously missing from `Release.entitlements` altogether, so
+release builds hit exactly that failure.
+
 ## Breaking change from the pre-v2 build
 
 Operator IDs and key formats changed, so **all contacts must re-pair.** Contacts

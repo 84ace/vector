@@ -8,7 +8,7 @@
 PRODUCT_NAME = Vector
 
 // The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = com.tactical.c2.vectorC2
+PRODUCT_BUNDLE_IDENTIFIER = com.tactical.vector
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 com.tactical.c2. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 com.tactical. All rights reserved.

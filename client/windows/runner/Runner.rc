@@ -89,11 +89,11 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.tactical.c2" "\0"
+            VALUE "CompanyName", "com.tactical" "\0"
             VALUE "FileDescription", "Vector" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "Vector" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.tactical.c2. All rights reserved." "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 com.tactical. All rights reserved." "\0"
             VALUE "OriginalFilename", "Vector.exe" "\0"
             VALUE "ProductName", "Vector" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"

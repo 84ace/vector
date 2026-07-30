@@ -21,7 +21,7 @@
 	     the identity keypair. -->
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)com.tactical.c2.vectorC2</string>
+		<string>$(AppIdentifierPrefix)com.tactical.vector</string>
 	</array>
 </dict>
 </plist>

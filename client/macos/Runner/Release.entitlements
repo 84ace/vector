@@ -14,5 +14,15 @@
 	<true/>
 	<key>com.apple.security.device.camera</key>
 	<true/>
+	<!-- A sandboxed app has no keychain identity unless it declares an access
+	     group. This was present only in DebugProfile, so a release build failed
+	     with -34018 while generating the identity keypair and the app refused to
+	     start — which is the designed behaviour for an unreachable keystore, but
+	     here the cause was a missing entitlement rather than the device.
+	     Keep in step with PRODUCT_BUNDLE_IDENTIFIER. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.tactical.vector</string>
+	</array>
 </dict>
 </plist>
