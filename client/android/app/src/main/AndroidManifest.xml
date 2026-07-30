@@ -9,7 +9,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
     <application
-        android:label="vector_c2"
+        android:label="Vector"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

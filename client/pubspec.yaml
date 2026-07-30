@@ -1,5 +1,5 @@
 name: vector_c2
-description: "A new Flutter project."
+description: "Vector — tactical command and control comms."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -71,6 +71,10 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
 
+  # Generates the per-platform launcher icons from assets/branding/. Regenerate
+  # with: dart run flutter_launcher_icons
+  flutter_launcher_icons: ^0.14.4
+
 dependency_overrides:
   record_linux: ^1.0.0
 
@@ -115,3 +119,31 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+# Launcher icons, generated from assets/branding/ by flutter_launcher_icons.
+#
+# The source artwork is 260x316 with a transparent background, so it is scaled
+# and padded onto the app's own slate background (C2Colors.slateBg, #0F172A)
+# rather than used directly: iOS rejects an icon with an alpha channel, and the
+# silver ribbon in the mark has almost no contrast against white.
+#
+# Regenerate after changing the artwork:
+#   dart run flutter_launcher_icons
+flutter_launcher_icons:
+  image_path: "assets/branding/app_icon.png"
+  android: true
+  ios: true
+  macos:
+    generate: true
+    image_path: "assets/branding/app_icon.png"
+  windows:
+    generate: true
+    image_path: "assets/branding/app_icon.png"
+    icon_size: 256
+  # Android adaptive layers. The foreground keeps the mark inside the ~66% safe
+  # zone so no launcher mask can clip it.
+  adaptive_icon_background: "#0F172A"
+  adaptive_icon_foreground: "assets/branding/app_icon_foreground.png"
+  # iOS must ship an opaque icon; flatten onto the same background.
+  remove_alpha_ios: true
+  background_color_ios: "#0F172A"
