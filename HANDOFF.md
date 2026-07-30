@@ -15,7 +15,8 @@ telemetry, PTT, voice and video calls are all verified on real hardware (a Mac
 and an Android handset on the same LAN).
 
 Read `SECURITY.md` first. It states the threat model, what is protected and how,
-and — deliberately — what is not.
+and — deliberately — what is not. `DEPLOYMENT.md` covers getting a relay node
+deployed with TLS and configuring the client to trust it.
 
 **Architecture, briefly**
 
@@ -27,8 +28,10 @@ and — deliberately — what is not.
 - Every envelope is signed; recipients verify the signature *and* that the
   claimed sender ID derives from the attached key, then decrypt using their
   **stored** copy of that contact's key — never a key carried by the message.
-- Pairwise: X25519 → HKDF-SHA256 → AES-256-GCM, random nonce, envelope header
-  bound in as AAD. Team traffic: a shared symmetric key exchanged during pairing.
+- Pairwise: a Double Ratchet over the static X25519 identities — alternating DH
+  ratchet, per-message symmetric chains, AES-256-GCM, envelope and ratchet
+  headers both bound in as AAD. Team traffic: a shared symmetric key exchanged
+  during pairing.
 - Calls are WebRTC; media is DTLS-SRTP peer-to-peer and never touches the relay.
   Signalling rides the sealed channel, so the DTLS fingerprint exchange is
   authenticated.
@@ -37,78 +40,83 @@ and — deliberately — what is not.
 
 - Secure storage failure is fatal by design. Never fall back to
   `SharedPreferences` for key material; the app shows a blocking error instead.
+  This now covers ratchet state as well as identity keys.
 - No protocol is described as Signal, X3DH, or MLS. The team key is a shared
-  symmetric key and says so. Keep the naming honest.
-- No TURN was configured deliberately: a call that cannot find a direct path
-  fails visibly rather than silently relaying media through a third party.
+  symmetric key and says so. The pairwise path *is* a Double Ratchet and may say
+  so, but the two places it differs from X3DH are written down in `SECURITY.md`
+  and must stay written down.
+- No TURN is configured by default: a call that cannot find a direct path fails
+  visibly rather than silently relaying media through a third party. It is now a
+  build-time opt-in (`TURN_URLS`) rather than a source edit, and enabling it logs
+  what the relay learns. That decision is settled.
+- Plaintext transport is refused to any routable host and permitted on the LAN,
+  keyed on the node's address rather than on a flag. `TRANSPORT_POLICY=tls-only`
+  tightens it; `any` is the documented escape hatch for split-horizon DNS.
 - Unpaired peers may hold a P2P link but may send *only* a pairing request
   (`P2PMeshEngine._dispatchFrame`). Refusing them outright makes pairing
   impossible on an isolated network — that bug has already been fixed once.
+- Delivery of a team key is confirmed by acknowledgement, not by a transport
+  accepting the envelope. Do not "simplify" that back to clearing on send.
 
-## Tasks, in rough order of consequence
+## Outstanding work
 
-### 1. TLS on the relay
+### 1. Prekeys, to close the forward-secrecy gap at conversation start
 
-Message bodies are end-to-end encrypted, but without TLS the routing metadata —
-who talks to whom, when, how much — is exposed to anything on the network path.
+The pairwise path is ratcheted, but the bootstrap has no prekeys: both sides
+derive the root secret from the two static keys, so the **first chain in each
+direction** is recoverable from the long-term keys plus the ratchet public key in
+the header. Traffic sent before a conversation's first reply is therefore still
+exposed by a device compromise; everything after it is not.
 
-The plumbing exists: `backend/cmd/node/main.go` reads `TLS_CERT_FILE` and
-`TLS_KEY_FILE` (and `ALLOWED_ORIGINS` for browser clients), and logs a warning
-at startup when unconfigured. The client negotiates `wss://` automatically when
-a seed URL is `https://`, and `MeshClient(requireSecureTransport: true)` will
-refuse plaintext nodes.
+This is what X3DH's one-time prekeys solve. The obstacle is that there is no
+server to publish them to and pairing is a QR exchange, so they would have to
+ride the pairing payload (a small batch) with a story for exhaustion.
 
-What is missing: a documented deployment path (certificate provisioning,
-`docker-compose` wiring, and whether `requireSecureTransport` should default to
-true once TLS is available).
+The limit is asserted by `test/double_ratchet_test.dart`, in the test named
+`KNOWN LIMIT: ...`. If this is implemented, that test flips and the
+`SECURITY.md` bullet must change with it.
 
-### 2. TURN, or an explicit decision not to
+### 2. Team traffic has no forward secrecy
 
-Calls work on a LAN. Two peers behind symmetric NAT — typically different
-carrier networks — will fail to connect. The failure is surfaced as a
-`CALL FAILED` event rather than ringing forever.
+The Double Ratchet covers pairwise only. Telemetry, group chat, broadcasts and
+SOS use the shared epoch key, so a device compromise exposes captured team
+traffic for every epoch whose key it holds.
 
-`WebRtcCallService._iceServers` (`client/lib/services/webrtc_call_service.dart`)
-is the hook. Note in `SECURITY.md` that a TURN relay sees the encrypted media
-stream and both endpoints' addresses; if TURN is added, that section needs
-updating to match.
+A sender-keys scheme (per-sender ratcheted chain, distributed pairwise) is the
+usual answer and the pairwise channel to distribute it already exists and is now
+ratcheted. Note that telemetry is high-rate — every 4s per operator — so measure
+before adding per-message asymmetric work to that path.
 
-### 3. Forward secrecy
+### 3. mobile_scanner cannot run on an Apple Silicon iOS simulator
 
-Pairwise keys are static per contact. Compromising a device exposes previously
-captured traffic for its conversations, and there is no post-compromise
-recovery. This is stated plainly in `SECURITY.md` rather than papered over.
+`flutter build ios` works for device, profile and simulator. But
+`mobile_scanner` 6.0.11's podspec sets
+`EXCLUDED_ARCHS[sdk=iphonesimulator*] = i386 armv7 arm64`, so MLKit and the
+plugin are never built for the only architecture an iOS 26+ Apple Silicon
+simulator offers. The build *succeeds* and Flutter prints the affected targets,
+but the resulting binary will not install there.
 
-A Double Ratchet over the existing X25519 identities is the fix. `E2EEEngine`
-(`client/lib/crypto/e2ee_engine.dart`) is the single place pairwise sealing
-happens, so the blast radius is contained. If this is implemented, update the
-"What this does not protect against" section — and only then may the code use
-ratchet terminology.
-
-### 4. iOS build is broken
-
-`flutter build ios` fails with `Module 'mobile_scanner' not found` from
-`GeneratedPluginRegistrant.m`. This is pre-existing and unrelated to recent
-work; it survives `flutter clean` plus deleting `ios/Pods`, `Podfile.lock` and
-`.symlinks`. `pod install` itself succeeds.
-
-`mobile_scanner: ^6.0.0` pulls in GoogleMLKit. The iOS deployment target is
-already 15.5 (both `ios/Podfile` and the Xcode project). Likely a Swift module
-or MLKit linkage problem. Android and macOS build fine.
+Options: test QR pairing on a physical device, or upgrade to `mobile_scanner`
+7.x, which drops MLKit for the Vision API. That is a major version bump touching
+`client/lib/ui/onboarding/qr_pairing_view.dart` and needs device testing.
 
 macOS additionally needs a one-time device registration in the Apple developer
 account for provisioning; that is an account action, not a code change.
 
-### 5. Team key rotation is best-effort
+### 4. Smaller known gaps
 
-Unpairing a contact rotates the team key and distributes it pairwise to the
-remaining members (`_rotateAndDistributeTeamKey` in `client/lib/main.dart`).
-Members who are offline at that moment do not receive it until they reconnect,
-and there is currently no mechanism that re-delivers it — the event log records
-when distribution was incomplete, and that is all.
-
-Consider re-attempting delivery when a peer reappears, in the same way pending
-pairing requests are retried (`_retryPendingPairRequests`).
+- **A team member who never returns stays behind.** Rotation is now tracked per
+  recipient, retried whenever a route appears, and cleared only on
+  acknowledgement — but there is no guarantee about *when* an absent operator
+  catches up, and no upper bound after which they are dropped.
+- **The node reads its certificate once at startup.** Renewal has to restart or
+  signal it; there is no hot reload.
+- **No node-to-node authentication.** `/announce` accepts peer records from
+  private addresses only. Federation across untrusted networks would need node
+  identity keys, which is not implemented.
+- **`pod install` needs a UTF-8 locale.** Under Ruby 4.x, CocoaPods 1.16 fails
+  with `Unicode Normalization not appropriate for ASCII-8BIT` if `LANG` is unset.
+  Export `LANG=en_US.UTF-8` in bare shells and CI.
 
 ## Verifying your work
 
@@ -132,6 +140,19 @@ cd backend && PORT=18080 go run ./cmd/node
 cd client && RELAY_URL=http://127.0.0.1:18080 flutter test test/live_relay_test.dart
 ```
 
+Over TLS, which also exercises certificate pinning — see `DEPLOYMENT.md` for
+generating the CA:
+
+```bash
+cd backend && ./scripts/make-internal-ca.sh ./certs 127.0.0.1 localhost
+PORT=18443 TLS_CERT_FILE=./certs/node.crt TLS_KEY_FILE=./certs/node.key go run ./cmd/node
+```
+
+```bash
+cd client && RELAY_URL=https://localhost:18443 RELAY_CA_FILE=../backend/certs/ca.crt \
+  flutter test test/live_relay_test.dart
+```
+
 `client/test/pairing_integration_test.dart` stands up two complete stacks on
 real sockets and drives a full pairing. Run it after any change to the crypto,
 the envelope, or `P2PMeshEngine`.
@@ -150,11 +171,16 @@ So:
 - **A regression test must fail against the original defect.** Reintroduce the
   bug, watch the test go red, then restore the fix. A test that passes either
   way proves nothing. Several existing tests were verified this way and say so
-  in their comments.
+  in their comments — including the three forward-secrecy and post-compromise
+  tests in `test/double_ratchet_test.dart`, which were checked by restoring
+  static-static sealing.
 - Prefer integration tests that stand up both ends over mocks of either.
 - Layout bugs are cheap to catch: pump the real widget at 320×568 and assert
   `tester.takeException()` is null. Two overflow bugs shipped before this was
   routine.
+- **Do not trust this file over the code.** The previous version of it described
+  the iOS build as broken; it had already been fixed by uncommitted changes in
+  the working tree, and the description cost real time. Reproduce before fixing.
 
 ## Working in this codebase
 
@@ -164,6 +190,4 @@ So:
 - Edit with explicit string anchors, not computed line offsets. `main.dart` and
   the call view were corrupted several times by index arithmetic that assumed
   member ordering; the analyzer caught it each time, but it cost real effort.
-- The work is uncommitted as of this handoff. Check `git status` before starting
-  and consider committing the existing state first, so your changes are
-  separable from it.
+  This applies to `project.pbxproj` too.
