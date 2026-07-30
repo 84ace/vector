@@ -11,8 +11,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/c2_message.dart';
-import 'mesh_client.dart';
-import 'p2p_mesh_engine.dart';
 import 'secure_channel.dart';
 
 class PttVoiceClip {
@@ -65,8 +63,6 @@ class PttAudioService {
   static int _playbackGeneration = 0;
 
   static Timer? _callToneTimer;
-  static StreamSubscription? _meshSub;
-  static StreamSubscription? _p2pSub;
   static final Set<String> _processedMessageIds = <String>{};
   static final Queue<String> _processedOrder = Queue<String>();
   static DateTime? _incomingRecordingStartTime;
@@ -182,48 +178,48 @@ class PttAudioService {
               ),
       );
 
-  /// Subscribes to the mesh and P2P streams for push-to-talk clips.
+  /// Prepares playback for push-to-talk clips.
   ///
-  /// [channel] verifies and decrypts every envelope before a single byte of
-  /// audio is written to disk or played. Live call audio no longer comes through
-  /// here at all — it runs peer-to-peer over WebRTC. This path handles the
-  /// store-and-forward clips, which have to survive the recipient being offline.
+  /// This no longer subscribes to the message streams. Envelopes are opened once
+  /// by the receive path and dispatched to [handleOpenedMessage] — see the note
+  /// there for why opening them twice broke every call. Live call audio does not
+  /// come through here at all; it runs peer-to-peer over WebRTC. This path
+  /// handles the store-and-forward clips, which have to survive the recipient
+  /// being offline.
   static Future<void> initializeGlobalListener({
-    required MeshClient meshClient,
-    required P2PMeshEngine p2pMeshEngine,
-    required SecureChannel channel,
     required String Function(String operatorId) resolveCallsign,
   }) async {
-    await _meshSub?.cancel();
-    await _p2pSub?.cancel();
+    _resolveCallsign = resolveCallsign;
 
     final prefs = await SharedPreferences.getInstance();
     await configureAudioOutput(useLoudspeaker: prefs.getBool('ptt_use_loudspeaker') ?? true);
 
     unawaited(_sweepTempAudio());
-
-    Future<void> handle(C2Message msg) =>
-        _handleGlobalMessage(msg, channel, resolveCallsign);
-
-    _meshSub = meshClient.incomingMessages.listen(handle);
-    _p2pSub = p2pMeshEngine.incomingP2PMessages.listen(handle);
   }
 
+  /// Names an operator for the UI. Set by [initializeGlobalListener].
+  static String Function(String operatorId)? _resolveCallsign;
+
   static Future<void> disposeGlobalListener() async {
-    await _meshSub?.cancel();
-    await _p2pSub?.cancel();
-    _meshSub = null;
-    _p2pSub = null;
+    _resolveCallsign = null;
     await stopCallTones();
   }
 
-  static Future<void> _handleGlobalMessage(
-    C2Message msg,
-    SecureChannel channel,
-    String Function(String) resolveCallsign,
-  ) async {
+  /// Handles a push-to-talk payload that has *already* been verified and
+  /// decrypted by the receive path.
+  ///
+  /// This used to subscribe to the message streams and call `channel.open()`
+  /// itself. Push-to-talk clips and WebRTC signalling share
+  /// [MessageType.callSignaling], so every signalling envelope was opened twice:
+  /// once here to test the body for 'PTT_', and once by the main receive path.
+  /// The Double Ratchet consumes a message key on the first successful decrypt,
+  /// so whichever ran second always failed with "message key already used" —
+  /// which broke every call and every cross-device transmission, on sessions
+  /// that were otherwise perfectly healthy. An envelope must be opened exactly
+  /// once, and the plaintext dispatched.
+  static Future<void> handleOpenedMessage(OpenedMessage opened) async {
+    final msg = opened.envelope;
     if (msg.type != MessageType.callSignaling) return;
-    if (msg.senderId == channel.myOperatorId) return;
 
     // Dedup on the envelope ID, which is unique per message. The old key hashed
     // the body with String.hashCode and wiped the whole set at 1000 entries, so
@@ -235,14 +231,11 @@ class PttAudioService {
       _processedMessageIds.remove(_processedOrder.removeFirst());
     }
 
-    final result = await channel.open(msg);
-    if (result is! OpenedMessage) return;
-
-    final body = result.plaintext;
+    final body = opened.plaintext;
     if (!body.contains('PTT_')) return;
 
-    final senderId = result.envelope.senderId;
-    final callsign = resolveCallsign(senderId);
+    final senderId = msg.senderId;
+    final callsign = _resolveCallsign?.call(senderId) ?? senderId;
 
     if (body.contains('PTT_AUDIO_CHUNK')) {
       await _handleAudioChunk(body, callsign);

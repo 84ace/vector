@@ -554,9 +554,6 @@ class _MainShellViewState extends State<MainShellView> {
     }
 
     await PttAudioService.initializeGlobalListener(
-      meshClient: _meshClient,
-      p2pMeshEngine: _p2pMeshEngine,
-      channel: _channel,
       resolveCallsign: _callsignFor,
     );
 
@@ -728,6 +725,16 @@ class _MainShellViewState extends State<MainShellView> {
 
     final opened = result as OpenedMessage;
     final sender = opened.sender!;
+
+    // Push-to-talk shares MessageType.callSignaling with WebRTC signalling, so
+    // the PTT service needs to see this envelope too — but as plaintext, from
+    // here. It used to hold its own subscription and open the envelope itself,
+    // which meant every signalling envelope was decrypted twice and the second
+    // attempt always failed: the ratchet consumes a message key on the first
+    // one. Calls and cross-device transmissions both died on it.
+    if (msg.type == MessageType.callSignaling) {
+      await PttAudioService.handleOpenedMessage(opened);
+    }
 
     // Control payloads are JSON objects with an "action" field. They are now
     // authenticated exactly like chat: signed by a paired contact and sealed
