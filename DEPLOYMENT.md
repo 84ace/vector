@@ -221,14 +221,30 @@ Two environment notes, both of which have cost time before:
   export LANG=en_US.UTF-8
   ```
 
-- **`mobile_scanner` cannot run on an Apple Silicon iOS 26+ simulator.** Its
-  podspec excludes `arm64` for `iphonesimulator`, so MLKit and the plugin are
-  never built for the only architecture those simulators offer. The build still
-  *succeeds* — Flutter prints a list of the affected targets and produces an
-  x86_64 simulator binary — but it will not install on a modern simulator. Test
-  QR pairing on a physical device, or upgrade to `mobile_scanner` 7.x, which
-  drops MLKit for the Vision API. That upgrade is a major version bump touching
-  the pairing UI and has not been done.
+- **Simulator builds need `mobile_scanner` 7.x or newer.** 6.x excluded `arm64`
+  for `iphonesimulator` (it pulled in GoogleMLKit), so the app built as x86_64
+  only and `simctl install` failed with `Failed to find matching arch` on any
+  Apple Silicon iOS 26+ simulator, which are arm64-only. 7.x uses Apple's Vision
+  API, ships a universal simulator slice, and removes the MLKit pods — release
+  builds dropped from 52.2 MB to 32.7 MB. Do not downgrade it.
+
+To run on a simulator:
+
+```bash
+xcrun simctl boot "iPhone 17 Pro" && open -a Simulator
+flutter run                     # or: flutter build ios --simulator
+```
+
+`flutter run` handles build, install and launch. To do it by hand:
+
+```bash
+flutter build ios --simulator
+xcrun simctl install booted build/ios/iphonesimulator/Runner.app
+xcrun simctl launch booted com.tactical.c2.vectorC2
+```
+
+The simulator has no camera, so QR scanning cannot be exercised there — use the
+"paste pairing code" field on the pairing screen, or a physical device.
 
 ## Notes
 

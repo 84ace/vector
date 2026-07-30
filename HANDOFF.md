@@ -87,21 +87,29 @@ usual answer and the pairwise channel to distribute it already exists and is now
 ratcheted. Note that telemetry is high-rate — every 4s per operator — so measure
 before adding per-message asymmetric work to that path.
 
-### 3. mobile_scanner cannot run on an Apple Silicon iOS simulator
+### 3. iOS/macOS signing, and what is left on Apple platforms
 
-`flutter build ios` works for device, profile and simulator. But
-`mobile_scanner` 6.0.11's podspec sets
-`EXCLUDED_ARCHS[sdk=iphonesimulator*] = i386 armv7 arm64`, so MLKit and the
-plugin are never built for the only architecture an iOS 26+ Apple Silicon
-simulator offers. The build *succeeds* and Flutter prints the affected targets,
-but the resulting binary will not install there.
+Builds are healthy on all four platforms: iOS device, profile and simulator,
+macOS and Android. The app runs on an Apple Silicon iOS 26 simulator and clears
+onboarding, generating its identity in the keychain.
 
-Options: test QR pairing on a physical device, or upgrade to `mobile_scanner`
-7.x, which drops MLKit for the Vision API. That is a major version bump touching
-`client/lib/ui/onboarding/qr_pairing_view.dart` and needs device testing.
+What remains:
 
-macOS additionally needs a one-time device registration in the Apple developer
-account for provisioning; that is an account action, not a code change.
+- macOS needs a one-time device registration in the Apple developer account for
+  provisioning; that is an account action, not a code change.
+- The macOS Xcode project has the same mismatched-xcconfig problem that iOS had
+  (`pod install` warns that it cannot set the base configuration for the release
+  and profile configurations, because `Runner/Configs/AppInfo.xcconfig` does not
+  include the Pods xcconfig). It builds today because the generated Pods
+  configurations happen to agree, which stops being true as soon as a pod
+  carries per-configuration settings. Fix it the way `ios/Flutter/Profile.xcconfig`
+  was fixed.
+- The iOS deployment target is 15.5, which is now a product choice rather than a
+  constraint: it was forced by `mobile_scanner` 6.x via GoogleMLKit, and 7.x
+  declares 12.0. Lower it if older devices matter; keep `ios/Podfile` and
+  `IPHONEOS_DEPLOYMENT_TARGET` in step.
+- The simulator has no camera, so QR scanning can only be exercised on a
+  physical device. The paste-the-pairing-code path covers simulator testing.
 
 ### 4. Smaller known gaps
 

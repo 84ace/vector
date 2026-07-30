@@ -1,5 +1,10 @@
-# mobile_scanner requires iOS 15.5; without an explicit platform CocoaPods
-# defaults to 13.0 and pod install fails.
+# An explicit platform is required: without one CocoaPods defaults to 13.0 and
+# pod install fails.
+#
+# 15.5 is now a product choice, not a dependency constraint. It was forced by
+# mobile_scanner 6.x via GoogleMLKit; 7.x uses Apple's Vision API and declares
+# 12.0, so this floor can be lowered if older devices need to be supported.
+# Keep it in step with IPHONEOS_DEPLOYMENT_TARGET in the Xcode project.
 platform :ios, '15.5'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
