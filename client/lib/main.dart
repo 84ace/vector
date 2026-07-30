@@ -278,6 +278,25 @@ class _MainShellViewState extends State<MainShellView> {
     }
     _pairwiseEngine = E2EEEngine(identity: _identity);
 
+    // A contact still on the pre-ratchet build sends v2 ciphertext, which has no
+    // forward secrecy. It is accepted so a squad can update one device at a time,
+    // but the operator should be able to see that it happened.
+    final reportedLegacyPeers = <String>{};
+    _pairwiseEngine.onLegacyCiphertext = (peerKexPublicKey) {
+      if (!mounted || !reportedLegacyPeers.add(peerKexPublicKey)) return;
+      final peer = _teamProfiles.firstWhere(
+        (p) => p.kexPublicKey == peerKexPublicKey,
+        orElse: () => _myProfile,
+      );
+      _addEventLog(
+        'CONTACT ON AN OLDER BUILD',
+        '${peer.callsign} is sending messages without forward secrecy. Their '
+            'traffic is still authenticated and encrypted, but a later device '
+            'compromise would expose it. Ask them to update.',
+        EventSeverity.warning,
+      );
+    };
+
     _myProfile = profile.copyWith(
       id: _identity.operatorId,
       signPublicKey: _identity.signPublicKey,
@@ -1130,7 +1149,10 @@ class _MainShellViewState extends State<MainShellView> {
     await _teamKeyDistributor.forget(opId);
     _telemetryService.forgetOperator(opId);
     PttAudioService.forgetOperator(opId);
-    if (removed != null) _pairwiseEngine.forgetPeer(removed.kexPublicKey);
+    // Awaited: forgetting a peer now also erases its persisted ratchet state,
+    // and leaving that behind would let a later re-pair resume a session whose
+    // chain position the other side has already forgotten.
+    if (removed != null) await _pairwiseEngine.forgetPeer(removed.kexPublicKey);
 
     await _persistContacts();
   }
@@ -1723,6 +1745,9 @@ class _MainShellViewState extends State<MainShellView> {
           // reading traffic addressed to the identity it just discarded.
           await OperatorIdentity.destroy();
           await TeamGroupEngine.destroy();
+          // Ratchet state derives every future message key for every
+          // conversation, so it has to go the same way the identity keys do.
+          await _pairwiseEngine.destroyAllSessions();
 
           // prefs.clear() drops the persisted list, but the live distributor is
           // still holding it in memory with a retry timer running. Onboarding

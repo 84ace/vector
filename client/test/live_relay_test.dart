@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_c2/crypto/e2ee_engine.dart';
 import 'package:vector_c2/crypto/group_engine.dart';
 import 'package:vector_c2/crypto/operator_identity.dart';
+import 'package:vector_c2/crypto/ratchet_store.dart';
 import 'package:vector_c2/models/c2_message.dart';
 import 'package:vector_c2/models/operator_profile.dart';
 import 'package:vector_c2/services/mesh_client.dart';
@@ -34,8 +35,9 @@ void main() {
 
   // Deliberately no TestWidgetsFlutterBinding here: it installs an HttpOverrides
   // that fails every real request, and this suite needs genuine sockets. Nothing
-  // under test touches secure storage — identities are ephemeral and the team
-  // engine is constructed directly.
+  // under test touches secure storage — identities are ephemeral, the team
+  // engine is constructed directly, and the ratchet is given an in-memory store
+  // instead of the keystore-backed one.
 
   OperatorProfile profileFor(OperatorIdentity id, String callsign) => OperatorProfile(
         id: id.operatorId,
@@ -74,14 +76,14 @@ void main() {
 
     final aliceChannel = SecureChannel(
       identity: alice,
-      pairwise: E2EEEngine(identity: alice),
+      pairwise: E2EEEngine(identity: alice, store: InMemoryRatchetStore()),
       team: TeamGroupEngine(
           groupId: 'g', groupName: 'G', groupSecret: TeamGroupEngine.generateSecret()),
       lookupContact: (_) => profileFor(bob, 'BRAVO'),
     );
     final bobChannel = SecureChannel(
       identity: bob,
-      pairwise: E2EEEngine(identity: bob),
+      pairwise: E2EEEngine(identity: bob, store: InMemoryRatchetStore()),
       team: TeamGroupEngine(
           groupId: 'g', groupName: 'G', groupSecret: TeamGroupEngine.generateSecret()),
       lookupContact: (_) => profileFor(alice, 'ALPHA'),
