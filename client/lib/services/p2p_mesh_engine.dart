@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 
 import '../crypto/operator_identity.dart';
 import '../models/c2_message.dart';
+import 'transport_policy.dart';
 
 class PeerDevice {
   final String operatorId;
@@ -57,6 +58,14 @@ class P2PMeshEngine {
   final OperatorIdentity identity;
   final int p2pPort;
 
+  /// Whether direct links may run in the clear.
+  ///
+  /// There is no `wss://` variant of this transport to fall back to, so
+  /// [P2PLinkPolicy.plaintextDenied] means the engine never listens and never
+  /// dials. It is set independently of the relay's `TRANSPORT_POLICY` —
+  /// [P2PLinkPolicy] records why.
+  final P2PLinkPolicy linkPolicy;
+
   /// Returns true if [operatorId] is a paired contact.
   ///
   /// Unpaired operators may still hold a link — pairing has to travel somehow —
@@ -74,18 +83,44 @@ class P2PMeshEngine {
   final Map<String, _PeerLink> _peerLinks = {};
   final Set<String> _dialing = {};
 
+  /// Set when the link port was already taken, which means another copy of this
+  /// app holds this device's identity. See [start].
+  bool _instanceConflict = false;
+  bool get hasInstanceConflict => _instanceConflict;
+
+  /// EADDRINUSE across platforms: 48 on macOS/BSD, 98 on Linux/Android, 10048
+  /// on Windows. Matched on the code rather than the message, which is
+  /// localised and has changed between Dart releases.
+  static bool _isAddressInUse(SocketException e) {
+    final code = e.osError?.errorCode;
+    return code == 48 || code == 98 || code == 10048;
+  }
+
   final _incomingController = StreamController<C2Message>.broadcast();
   final _peersController = StreamController<List<PeerDevice>>.broadcast();
+  final _linkRefusalController = StreamController<String>.broadcast();
+
+  /// Peers already named in a refusal, so a discovery broadcast every 10s does
+  /// not bury the operator's event log under the same line.
+  final Set<String> _reportedRefusals = {};
 
   Stream<C2Message> get incomingP2PMessages => _incomingController.stream;
   Stream<List<PeerDevice>> get discoveredPeers => _peersController.stream;
   Map<String, PeerDevice> get activePeers => Map.unmodifiable(_discoveredPeers);
+
+  /// Links not formed because [linkPolicy] refused them, one line per peer.
+  ///
+  /// Reported for the same reason a skipped seed node is: a mesh that quietly
+  /// never finds anyone looks exactly like being out of range of every other
+  /// device.
+  Stream<String> get linkRefusals => _linkRefusalController.stream;
 
   P2PMeshEngine({
     required this.identity,
     this.p2pPort = 9090,
     required this.isPairedContact,
     bool announceEnabled = true,
+    this.linkPolicy = P2PLinkPolicy.plaintextAllowed,
   }) : _announceEnabled = announceEnabled;
 
   String get myOperatorId => identity.operatorId;
@@ -111,13 +146,36 @@ class P2PMeshEngine {
   /// announce timer and the peer reaper while the link server carried on
   /// looking healthy — the device simply never found anyone and never said why.
   Future<void> start() async {
+    // Refused before the listener binds, not just at the dial: accepting an
+    // inbound plaintext link while refusing to place one would deny nothing —
+    // the same link exists, dialled from the other end.
+    if (linkPolicy == P2PLinkPolicy.plaintextDenied) {
+      debugPrint('[P2P_ENGINE] Not starting: $p2pPlaintextRefusalReason');
+      _reportRefusal('_engine', 'P2P mesh not started — $p2pPlaintextRefusalReason');
+      return;
+    }
+
     try {
       _server = await HttpServer.bind(InternetAddress.anyIPv4, p2pPort);
       debugPrint('[P2P_ENGINE] Listening on port $p2pPort');
       _listenHttpServer();
+    } on SocketException catch (e) {
+      debugPrint('[P2P_ENGINE] Could not bind link server on $p2pPort: $e');
+      // An address already in use almost always means a second copy of this app
+      // is running on the same machine — and that is not a degraded P2P mesh, it
+      // is two processes sharing one identity and one ratchet store. Both
+      // authenticate to the relay under the same operator ID and both consume
+      // from the same receiving chain, so each message decrypts once and is
+      // reported by the other as "message key already used". The app has to stop
+      // rather than carry on as the second writer.
+      if (_isAddressInUse(e)) {
+        _instanceConflict = true;
+        return;
+      }
+      return; // Without this there is no P2P at all.
     } catch (e) {
       debugPrint('[P2P_ENGINE] Could not bind link server on $p2pPort: $e');
-      return; // Without this there is no P2P at all.
+      return;
     }
 
     await _startDiscovery();
@@ -182,6 +240,7 @@ class P2PMeshEngine {
     await stop();
     await _incomingController.close();
     await _peersController.close();
+    await _linkRefusalController.close();
   }
 
   void _listenHttpServer() {
@@ -472,8 +531,17 @@ class P2PMeshEngine {
       lastSeen: DateTime.now(),
     );
 
+    // An operator who typed an address is owed an answer, so this one reports
+    // every attempt rather than once per peer.
+    if (linkPolicy == P2PLinkPolicy.plaintextDenied) {
+      debugPrint('[P2P_ENGINE] Manual dial to $address refused: '
+          '$p2pPlaintextRefusalReason');
+      _emitRefusal('$address:${target.port} — $p2pPlaintextRefusalReason');
+      return false;
+    }
+
     try {
-      final socket = await WebSocket.connect('ws://${target.address}:${target.port}/ws')
+      final socket = await WebSocket.connect(_linkUrl(target))
           .timeout(const Duration(seconds: 5));
       await _performMutualAuth(socket, target.address);
       return true;
@@ -484,14 +552,21 @@ class P2PMeshEngine {
   }
 
   Future<void> _ensureDirectPeerConnection(PeerDevice peer) async {
+    // Unreachable while [start] refuses to bind the discovery socket, and kept
+    // anyway: this is the check that has to hold if a future caller reaches the
+    // dial by another route.
+    if (linkPolicy == P2PLinkPolicy.plaintextDenied) {
+      _reportRefusal(peer.operatorId,
+          '${peer.operatorId} at ${peer.address} — $p2pPlaintextRefusalReason');
+      return;
+    }
     if (_peerLinks.containsKey(peer.operatorId)) return;
     if (_peerLinks.length >= _maxPeers) return;
     if (!_dialing.add(peer.operatorId)) return; // Dial already in flight.
 
     try {
-      final socket = await WebSocket.connect(
-        'ws://${peer.address}:${peer.port}/ws',
-      ).timeout(const Duration(seconds: 3));
+      final socket = await WebSocket.connect(_linkUrl(peer))
+          .timeout(const Duration(seconds: 3));
 
       await _performMutualAuth(socket, peer.address, expectedPeerId: peer.operatorId);
     } catch (e) {
@@ -499,6 +574,23 @@ class P2PMeshEngine {
     } finally {
       _dialing.remove(peer.operatorId);
     }
+  }
+
+  /// The one place a direct-link URL is built.
+  ///
+  /// Plaintext, and there is no variant of this that is not: see [linkPolicy].
+  /// Single-sited so that "what scheme do peer links use" has one answer to
+  /// find rather than one per dial site.
+  static String _linkUrl(PeerDevice peer) => 'ws://${peer.address}:${peer.port}/ws';
+
+  /// Reports a refusal for [key] the first time only.
+  void _reportRefusal(String key, String detail) {
+    if (!_reportedRefusals.add(key)) return;
+    _emitRefusal(detail);
+  }
+
+  void _emitRefusal(String detail) {
+    if (!_linkRefusalController.isClosed) _linkRefusalController.add(detail);
   }
 
   void _reapStalePeers() {

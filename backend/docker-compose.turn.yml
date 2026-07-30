@@ -1,0 +1,42 @@
+# TURN overlay: relays call media when no direct path exists between two peers.
+#
+#   ./scripts/make-turn-config.sh c2.84ace.com
+#   docker compose -f docker-compose.yml -f docker-compose.turn.yml up -d
+#
+# TURN is off by default in the client and that is a deliberate decision, not an
+# omission — see SECURITY.md. Standing this up accepts a specific trade: the
+# relay learns who called whom, for how long, and from where. It cannot listen
+# to the call, because the stream stays DTLS-SRTP encrypted end to end.
+#
+# Running it yourself is the point. A third-party TURN service learns the same
+# metadata; this way it stays on hardware you control.
+services:
+  coturn:
+    image: coturn/coturn:4.6-alpine
+    container_name: vector-c2-turn
+    restart: unless-stopped
+
+    # Host networking, not published ports.
+    #
+    # TURN allocates a relay port per session out of min-port..max-port. Mapping
+    # that range through Docker's userland proxy costs one process per port and
+    # rewrites the source address coturn advertises, which breaks the candidates
+    # it just handed out. Host mode is the supported way to run coturn.
+    network_mode: host
+
+    volumes:
+      - ./certs/turnserver.conf:/etc/coturn/turnserver.conf:ro
+      # The same certificate the relay's reverse proxy uses. TURN over TLS wants
+      # a name the client trusts, and c2.84ace.com already has one.
+      - ./certs/turn:/certs:ro
+
+    command: ["-c", "/etc/coturn/turnserver.conf"]
+
+    healthcheck:
+      # Proves the process is listening, nothing more. TURN has no unauthenticated
+      # health endpoint, and a STUN binding request is the cheapest liveness probe
+      # that does not need credentials.
+      test: ["CMD", "sh", "-c", "netstat -ln | grep -q ':3478'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -16,7 +16,11 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 1.0.0+1
+# Build number is passed explicitly to `flutter build` as well. An earlier
+# App Store archive shipped CFBundleVersion=2 while this file said +1, so the
+# number the binary actually carried was not the one recorded here — and App
+# Store Connect refuses a duplicate build number for a given version.
+version: 1.0.0+6
 
 environment:
   sdk: ^3.11.4

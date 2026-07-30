@@ -694,6 +694,108 @@ void main() {
       }
     });
   });
+
+  group('re-pairing repairs a desynchronised session', () {
+    // Observed in the field: both operators reported every pairwise message as
+    // "message key already used", in both directions, after their identities had
+    // been reprovisioned. Transport, routing, addressing and the team key were
+    // all verified correct — the pairwise chains had simply diverged, and the
+    // obvious repair of pairing again did nothing, because pairing inherited the
+    // old chain position instead of starting a new one.
+    test('a one-sided reset does not repair it, and must not appear to', () async {
+      final p = await pair();
+
+      final a1 = aadFor('m1', p.alice, p.bob);
+      final c1 = await p.aliceEngine.encryptPayload('one', p.bob.kexPublicKey, aad: a1);
+      await p.bobEngine.decryptPayload(c1, p.alice.kexPublicKey, aad: a1);
+
+      // Only Alice forgets — the case where one operator deletes the contact and
+      // the other re-adds it over the top, which is what happened in the field.
+      await p.aliceEngine.forgetPeer(p.bob.kexPublicKey);
+
+      final a2 = aadFor('m2', p.alice, p.bob);
+      final c2 = await p.aliceEngine.encryptPayload('two', p.bob.kexPublicKey, aad: a2);
+
+      // Refusal is the correct outcome here. The point being pinned is that a
+      // one-sided reset is not a repair, so pairing must reset both ends.
+      await expectLater(
+        p.bobEngine.decryptPayload(c2, p.alice.kexPublicKey, aad: a2),
+        throwsA(isA<DecryptionFailure>()),
+      );
+    });
+
+    test('a mutual reset repairs it, in both directions', () async {
+      final p = await pair();
+
+      final a1 = aadFor('m1', p.alice, p.bob);
+      final c1 = await p.aliceEngine.encryptPayload('one', p.bob.kexPublicKey, aad: a1);
+      await p.bobEngine.decryptPayload(c1, p.alice.kexPublicKey, aad: a1);
+
+      final b1 = aadFor('m2', p.bob, p.alice);
+      final d1 = await p.bobEngine.encryptPayload('two', p.alice.kexPublicKey, aad: b1);
+      await p.aliceEngine.decryptPayload(d1, p.bob.kexPublicKey, aad: b1);
+
+      // What pairing now does at both ends: the requester drops its side when it
+      // sends PAIR_REQUEST, the approver when it approves.
+      await p.aliceEngine.forgetPeer(p.bob.kexPublicKey);
+      await p.bobEngine.forgetPeer(p.alice.kexPublicKey);
+
+      final a3 = aadFor('m3', p.alice, p.bob);
+      final c3 = await p.aliceEngine.encryptPayload('after', p.bob.kexPublicKey, aad: a3);
+      expect(await p.bobEngine.decryptPayload(c3, p.alice.kexPublicKey, aad: a3), 'after');
+
+      final b3 = aadFor('m4', p.bob, p.alice);
+      final d3 = await p.bobEngine.encryptPayload('back', p.alice.kexPublicKey, aad: b3);
+      expect(await p.aliceEngine.decryptPayload(d3, p.bob.kexPublicKey, aad: b3), 'back');
+    });
+
+    test('a reset returns both sides to the bootstrap chain, and no further', () async {
+      // This is the documented forward-secrecy gap, pinned rather than wished
+      // away. Resetting re-derives the first chain from the two static
+      // identities, so traffic captured from *that* chain becomes readable
+      // again — SECURITY.md states this under "Forward secrecy has a gap at the
+      // start of each conversation", and it is the reason X3DH's one-time
+      // prekeys would be needed to close it.
+      //
+      // What must NOT come back is anything from a later chain, because those
+      // keys depend on a ratchet step whose private half the reset discarded.
+      final p = await pair();
+
+      final a1 = aadFor('m1', p.alice, p.bob);
+      final bootstrap =
+          await p.aliceEngine.encryptPayload('first', p.bob.kexPublicKey, aad: a1);
+      await p.bobEngine.decryptPayload(bootstrap, p.alice.kexPublicKey, aad: a1);
+
+      // Bob replies, which advances the root key on Alice's side via a DH step.
+      final b1 = aadFor('m2', p.bob, p.alice);
+      final reply = await p.bobEngine.encryptPayload('reply', p.alice.kexPublicKey, aad: b1);
+      await p.aliceEngine.decryptPayload(reply, p.bob.kexPublicKey, aad: b1);
+
+      final a2 = aadFor('m3', p.alice, p.bob);
+      final laterChain =
+          await p.aliceEngine.encryptPayload('later', p.bob.kexPublicKey, aad: a2);
+      await p.bobEngine.decryptPayload(laterChain, p.alice.kexPublicKey, aad: a2);
+
+      await p.aliceEngine.forgetPeer(p.bob.kexPublicKey);
+      await p.bobEngine.forgetPeer(p.alice.kexPublicKey);
+
+      // The bootstrap chain is reachable again. Stated, not hidden.
+      expect(
+        await p.bobEngine.decryptPayload(bootstrap, p.alice.kexPublicKey, aad: a1),
+        'first',
+        reason: 'the documented bootstrap gap: no prekeys, so the first chain is '
+            'a pure function of the two long-term keys',
+      );
+
+      // Everything after the first reply stays shut.
+      await expectLater(
+        p.bobEngine.decryptPayload(laterChain, p.alice.kexPublicKey, aad: a2),
+        throwsA(isA<DecryptionFailure>()),
+        reason: 'a reset must not recover a chain that depended on a ratchet step',
+      );
+    });
+  });
+
 }
 
 /// Reproduces the pre-ratchet v2 sealing format, so the compatibility path is

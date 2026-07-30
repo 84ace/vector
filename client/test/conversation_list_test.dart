@@ -93,6 +93,7 @@ void main() {
     WidgetTester tester,
     List<ConversationSummary> rows, {
     Size? size,
+    void Function(OperatorProfile peer, {bool lock})? onLocateOnMap,
   }) async {
     if (size != null) {
       await tester.binding.setSurfaceSize(size);
@@ -108,6 +109,7 @@ void main() {
           ptt: recorder,
           onVoiceRecorded: (_) async {},
           onStartCall: (_, _) {},
+          onLocateOnMap: onLocateOnMap,
         ),
       ),
     );
@@ -267,6 +269,79 @@ void main() {
     await tester.tap(find.byIcon(Icons.call));
     await tester.pump();
     expect(called, Audience.direct(alpha));
+  });
+
+  testWidgets('holding push-to-talk keeps transmitting past the long-press deadline',
+      (tester) async {
+    // Regression: the control's own Tooltip registered a long-press recogniser
+    // on the same pointer, and at the 500 ms deadline it won the gesture arena
+    // and rejected the press this widget was waiting on. Transmissions died
+    // half a second in, or never started at all.
+    await pump(tester, [ConversationSummary(audience: Audience.direct(alpha))]);
+
+    final gesture = await tester.startGesture(tester.getCenter(find.byIcon(Icons.mic_none)));
+    addTearDown(() async => gesture.up());
+
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(
+      recorder.activeAudience.value,
+      Audience.direct(alpha),
+      reason: 'the long press should have opened the microphone by now',
+    );
+
+    await tester.pump(const Duration(seconds: 2));
+    expect(
+      recorder.activeAudience.value,
+      Audience.direct(alpha),
+      reason: 'nothing should stop the transmission while the finger is down',
+    );
+  });
+
+  testWidgets('the locate control reports centre on tap and track on hold', (tester) async {
+    final calls = <(String, bool)>[];
+    await pump(
+      tester,
+      [
+        ConversationSummary(
+          audience: Audience.direct(alpha),
+          telemetry: position(age: const Duration(minutes: 1)),
+        ),
+      ],
+      onLocateOnMap: (peer, {bool lock = false}) => calls.add((peer.callsign, lock)),
+    );
+
+    expect(find.byIcon(Icons.my_location), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.my_location));
+    await tester.pump();
+    expect(calls, [('ALPHA-1', false)]);
+
+    await tester.longPress(find.byIcon(Icons.my_location));
+    await tester.pump();
+    expect(calls.last, ('ALPHA-1', true));
+  });
+
+  testWidgets('the locate control is disabled for an operator with no position',
+      (tester) async {
+    final calls = <String>[];
+    await pump(
+      tester,
+      [ConversationSummary(audience: Audience.direct(alpha))],
+      onLocateOnMap: (peer, {bool lock = false}) => calls.add(peer.callsign),
+    );
+
+    // Shown but visibly inert, rather than absent: a control that comes and goes
+    // between rows moves the other actions under the operator's thumb.
+    expect(find.byIcon(Icons.location_disabled), findsOneWidget);
+    await tester.longPress(find.byIcon(Icons.location_disabled));
+    await tester.pump();
+    expect(calls, isEmpty, reason: 'tracking needs a position to track');
+  });
+
+  testWidgets('no locate control when the map cannot be reached', (tester) async {
+    await pump(tester, [ConversationSummary(audience: Audience.direct(alpha))]);
+    expect(find.byIcon(Icons.my_location), findsNothing);
+    expect(find.byIcon(Icons.location_disabled), findsNothing);
   });
 
   testWidgets('rows with actions still fit a small phone', (tester) async {

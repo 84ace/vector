@@ -29,9 +29,11 @@ import 'ui/chat/audience_selector.dart';
 import 'ui/chat/call_screen.dart';
 import 'ui/comms/conversation_list.dart';
 import 'ui/comms/conversation_view.dart';
+import 'ui/map/map_focus_controller.dart';
 import 'ui/map/tactical_map_view.dart';
 import 'ui/onboarding/onboarding_view.dart';
 import 'ui/onboarding/qr_pairing_view.dart';
+import 'ui/settings/network_diagnostics_view.dart';
 import 'ui/settings/settings_view.dart';
 import 'ui/theme/c2_colors.dart';
 
@@ -120,6 +122,10 @@ class _MainShellViewState extends State<MainShellView> {
   /// rather than starting up with keys it could not protect.
   SecureStorageUnavailable? _storageFailure;
   RelayTrustAnchorInvalid? _trustAnchorFailure;
+
+  /// Another copy of this app is already running. Blocking, like the failures
+  /// above: continuing would corrupt the ratchet state both copies share.
+  bool _instanceConflict = false;
   OperatorProfile? _activeCallPeer;
 
   late OperatorIdentity _identity;
@@ -142,12 +148,26 @@ class _MainShellViewState extends State<MainShellView> {
   Map<String, Telemetry> _teamTelemetry = {};
   String? _activeSosOperatorCallsign;
 
+  /// Carries "show me this operator" from the squad list over to the map, which
+  /// is a sibling in the same [IndexedStack] and so cannot be called directly.
+  final MapFocusController _mapFocus = MapFocusController();
+
   static const String _cloudNodeEnv =
       String.fromEnvironment('CLOUD_MESH_NODE_URL', defaultValue: '');
   static const String _nasNodeEnv =
       String.fromEnvironment('NAS_MESH_NODE_URL', defaultValue: '');
   static const String _localNodeEnv =
-      String.fromEnvironment('LOCAL_MESH_NODE_URL', defaultValue: 'http://127.0.0.1:8080');
+      String.fromEnvironment('LOCAL_MESH_NODE_URL', defaultValue: '');
+
+  /// Used only when no seed at all was configured, so that a bare `flutter run`
+  /// still finds a node on the developer's machine.
+  ///
+  /// It is not in the list unconditionally any more. It used to be, and under
+  /// `TRANSPORT_POLICY=tls-only` a plaintext loopback seed is refused on every
+  /// launch — which wrote a red security-severity line to the operator's event
+  /// log of a build that was configured entirely correctly. A refusal is meant
+  /// to mean "a node you asked for was skipped", and that one never was.
+  static const String _loopbackFallbackNode = 'http://127.0.0.1:8080';
   static const String _fieldRouterEnv =
       String.fromEnvironment('FIELD_ROUTER_NODE_URL', defaultValue: '');
 
@@ -159,6 +179,16 @@ class _MainShellViewState extends State<MainShellView> {
   static const String _transportPolicyEnv =
       String.fromEnvironment('TRANSPORT_POLICY', defaultValue: 'private');
 
+  /// Whether device-to-device links may run in the clear.
+  ///
+  /// Separate from `TRANSPORT_POLICY`, and not implied by it. A relay can be
+  /// given a certificate; two handsets on a subnet cannot, so denying plaintext
+  /// there switches the mesh off rather than encrypting it. [P2PLinkPolicy]
+  /// carries the full reasoning and SECURITY.md states what the plaintext link
+  /// does and does not expose.
+  static const String _p2pPlaintextEnv =
+      String.fromEnvironment('P2P_PLAINTEXT', defaultValue: 'allow');
+
   /// Base64 PEM of a CA to trust for relay certificates, on top of the platform
   /// roots. Needed for wss:// on an isolated network, which has no way to obtain
   /// a publicly-trusted certificate. See DEPLOYMENT.md.
@@ -167,12 +197,16 @@ class _MainShellViewState extends State<MainShellView> {
 
   /// Seed nodes come from --dart-define at build time. Nothing is hardcoded to a
   /// specific deployment any more: a build with no defines only tries localhost.
-  List<String> get candidateMeshNodes => [
-        _cloudNodeEnv,
-        _nasNodeEnv,
-        _localNodeEnv,
-        _fieldRouterEnv,
-      ].where((url) => url.isNotEmpty).toList();
+  List<String> get candidateMeshNodes {
+    final configured = [
+      _cloudNodeEnv,
+      _nasNodeEnv,
+      _localNodeEnv,
+      _fieldRouterEnv,
+    ].where((url) => url.isNotEmpty).toList();
+
+    return configured.isEmpty ? [_loopbackFallbackNode] : configured;
+  }
 
   /// Maps the build-time define onto a policy, defaulting to the safe end.
   ///
@@ -194,6 +228,16 @@ class _MainShellViewState extends State<MainShellView> {
         return null;
     }
   }
+
+  /// The policy actually in force, with the fallback applied.
+  static TransportPolicy get _resolvedTransportPolicy =>
+      _parseTransportPolicy(_transportPolicyEnv) ?? TransportPolicy.privateNetworkPlaintext;
+
+  /// The P2P link policy in force. An unrecognised value keeps the mesh up and
+  /// says so in the event log — the strict end here is "no P2P at all", which
+  /// is not something a typo should be able to switch on.
+  static P2PLinkPolicy get _resolvedP2PLinkPolicy =>
+      parseP2PLinkPolicy(_p2pPlaintextEnv) ?? P2PLinkPolicy.plaintextAllowed;
 
   @override
   void initState() {
@@ -250,7 +294,46 @@ class _MainShellViewState extends State<MainShellView> {
     if (mounted) setState(() => _isLoading = false);
   }
 
+  /// Shuts down everything [_initializeServices] started.
+  ///
+  /// Extracted so that bringing the services up twice in one process cannot
+  /// leave the first set running. It could, and the consequences were severe:
+  /// clearing all data stopped only the background service and the key
+  /// distributor, so the previous relay socket stayed open and authenticated
+  /// under the *old* operator ID, the previous telemetry timer kept transmitting
+  /// as it, and — worst — the previous stream subscriptions stayed live while
+  /// onboarding appended a second set.
+  ///
+  /// Every incoming envelope was then handed to the ratchet twice. The first
+  /// pass decrypted it and consumed the message key; the second reported
+  /// "message key already used (replay or duplicate)" and the message was
+  /// discarded. Calls and messages stopped arriving, on a brand-new session,
+  /// and clearing all data to recover was the very thing that caused it.
+  Future<void> _teardownServices() async {
+    _pairRetryTimer?.cancel();
+    _pairRetryTimer = null;
+
+    for (final sub in _subscriptions) {
+      await sub.cancel();
+    }
+    _subscriptions.clear();
+
+    if (!_myProfileInitialized) return;
+
+    await _backgroundComms.stop();
+    await PttAudioService.disposeGlobalListener();
+    await _callService.dispose();
+    await _telemetryService.dispose();
+    await _p2pMeshEngine.dispose();
+    await _meshClient.dispose();
+    _teamKeyDistributor.dispose();
+  }
+
   Future<void> _initializeServices(OperatorProfile profile) async {
+    // Idempotent by construction: a second call must replace the first set of
+    // services, never race it.
+    await _teardownServices();
+
     try {
       await [
         Permission.microphone,
@@ -391,8 +474,7 @@ class _MainShellViewState extends State<MainShellView> {
     _meshClient = MeshClient(
       identity: _identity,
       seedNodeUrls: candidateMeshNodes,
-      transportPolicy: _parseTransportPolicy(_transportPolicyEnv) ??
-          TransportPolicy.privateNetworkPlaintext,
+      transportPolicy: _resolvedTransportPolicy,
       trustContext: relayTrust,
     );
 
@@ -406,11 +488,22 @@ class _MainShellViewState extends State<MainShellView> {
       );
     }
 
+    if (parseP2PLinkPolicy(_p2pPlaintextEnv) == null) {
+      _addEventLog(
+        'UNKNOWN P2P_PLAINTEXT VALUE',
+        'Build defines P2P_PLAINTEXT="$_p2pPlaintextEnv", which is not one of '
+            'allow / deny. Falling back to "allow": direct device-to-device '
+            'links are formed in the clear on the local network.',
+        EventSeverity.warning,
+      );
+    }
+
     _p2pMeshEngine = P2PMeshEngine(
       identity: _identity,
       p2pPort: 9090,
       isPairedContact: (id) => _findContact(id) != null,
       announceEnabled: prefs.getBool('p2p_announce') ?? true,
+      linkPolicy: _resolvedP2PLinkPolicy,
     );
 
     _telemetryService = TelemetryService(
@@ -461,9 +554,6 @@ class _MainShellViewState extends State<MainShellView> {
     }
 
     await PttAudioService.initializeGlobalListener(
-      meshClient: _meshClient,
-      p2pMeshEngine: _p2pMeshEngine,
-      channel: _channel,
       resolveCallsign: _callsignFor,
     );
 
@@ -509,6 +599,12 @@ class _MainShellViewState extends State<MainShellView> {
         if (!mounted) return;
         _addEventLog('NODE SKIPPED: INSECURE TRANSPORT', detail, EventSeverity.security);
       }),
+      // A mesh disabled by build define is otherwise indistinguishable from a
+      // subnet with nobody else on it.
+      _p2pMeshEngine.linkRefusals.listen((detail) {
+        if (!mounted) return;
+        _addEventLog('P2P LINK REFUSED: PLAINTEXT DISABLED', detail, EventSeverity.security);
+      }),
       _p2pMeshEngine.incomingP2PMessages.listen(_processIncomingMessage),
       _p2pMeshEngine.discoveredPeers.listen((peers) {
         if (!mounted) return;
@@ -547,6 +643,13 @@ class _MainShellViewState extends State<MainShellView> {
 
     _meshClient.start();
     await _p2pMeshEngine.start();
+    // A taken link port means another copy of this app already holds this
+    // device's identity. Two writers on one ratchet store desynchronise it, so
+    // this stops rather than becoming the second.
+    if (_p2pMeshEngine.hasInstanceConflict && mounted) {
+      setState(() => _instanceConflict = true);
+      return;
+    }
     await _telemetryService.startReporting();
 
     // Started here, in the foreground, and not from a lifecycle callback:
@@ -622,6 +725,16 @@ class _MainShellViewState extends State<MainShellView> {
 
     final opened = result as OpenedMessage;
     final sender = opened.sender!;
+
+    // Push-to-talk shares MessageType.callSignaling with WebRTC signalling, so
+    // the PTT service needs to see this envelope too — but as plaintext, from
+    // here. It used to hold its own subscription and open the envelope itself,
+    // which meant every signalling envelope was decrypted twice and the second
+    // attempt always failed: the ratchet consumes a message key on the first
+    // one. Calls and cross-device transmissions both died on it.
+    if (msg.type == MessageType.callSignaling) {
+      await PttAudioService.handleOpenedMessage(opened);
+    }
 
     // Control payloads are JSON objects with an "action" field. They are now
     // authenticated exactly like chat: signed by a paired contact and sealed
@@ -937,9 +1050,17 @@ class _MainShellViewState extends State<MainShellView> {
     final applicant = await _channel.openPairRequest(msg);
     if (applicant == null) return;
 
-    if (_findContact(applicant.id) != null || _activePairingDialogs.contains(applicant.id)) {
-      return;
-    }
+    // An operator who is already a contact is allowed to pair again.
+    //
+    // This used to return here, which made a re-pair a no-op on whichever side
+    // still held the contact: it never reset its session and never sent a
+    // PAIR_ACK, so a desynchronised ratchet could not be repaired from either
+    // end without deleting the contact first — and deleting on only one side
+    // reproduced the same fault. The approval dialog still gates it, and it
+    // still shows the safety number, so re-pairing is no more trusting than
+    // pairing was; it is the same decision, taken again.
+    if (_activePairingDialogs.contains(applicant.id)) return;
+    final isRepair = _findContact(applicant.id) != null;
 
     Map<String, dynamic> data;
     try {
@@ -952,6 +1073,18 @@ class _MainShellViewState extends State<MainShellView> {
     if (tokenId.isNotEmpty && _consumedPairingTokens.contains(tokenId)) {
       _notifyTokenReuseSecurityAlert(applicant, tokenId);
     } else {
+      if (isRepair) {
+        // Worth a line in the log: approving this discards the existing secure
+        // session with an operator already trusted, which is the intended repair
+        // but is also exactly what an attacker would want to induce. The safety
+        // number in the dialog is what distinguishes the two.
+        _addEventLog(
+          'RE-PAIRING REQUESTED',
+          '${applicant.callsign} (${applicant.id}) asked to pair again. Approving '
+              'replaces the existing secure session. Check the safety number.',
+          EventSeverity.warning,
+        );
+      }
       _showPairingApprovalDialog(applicant, tokenId);
     }
   }
@@ -1061,7 +1194,7 @@ class _MainShellViewState extends State<MainShellView> {
         plaintext: jsonEncode(payload),
         idPrefix: idPrefix,
       );
-      final sentMesh = _meshClient.sendMessage(envelope);
+      final sentMesh = _meshClient.sendMessage(envelope, queueIfUnsent: true);
       final sentP2P = _p2pMeshEngine.sendP2PDirectMessage(envelope);
       return sentMesh || sentP2P;
     } catch (e) {
@@ -1540,6 +1673,16 @@ class _MainShellViewState extends State<MainShellView> {
     await _consumeToken(tokenId);
     await _storeContact(newProfile);
 
+    // A pairing establishes a fresh relationship, so it must not inherit the
+    // chain position of an old one. Without this, re-pairing an operator whose
+    // ratchet had desynchronised silently resumed the broken session — so the
+    // obvious field repair, "pair again", could not repair anything, and every
+    // message continued to fail as "message key already used".
+    //
+    // The approver does the same in _acceptPairing, which makes PAIR_ACK the
+    // first message of the new session at both ends.
+    await _pairwiseEngine.forgetPeer(newProfile.kexPublicKey);
+
     if (!sendPairRequest) return;
 
     _pendingPairRequests.add(newProfile.id);
@@ -1574,6 +1717,13 @@ class _MainShellViewState extends State<MainShellView> {
   Future<void> _acceptPairing(OperatorProfile applicant, String tokenId) async {
     await _consumeToken(tokenId);
     await _storeContact(applicant);
+
+    // Discard any previous session before sealing the acknowledgement, so the
+    // PAIR_ACK below is the first message of the new one. The requester dropped
+    // its side in _addContactDirectly, so both ends restart from the static
+    // keys together — a one-sided reset would leave the chains further apart
+    // than it found them.
+    await _pairwiseEngine.forgetPeer(applicant.kexPublicKey);
 
     await _sendControl(applicant, {
       'action': 'PAIR_ACK',
@@ -1626,7 +1776,10 @@ class _MainShellViewState extends State<MainShellView> {
         }),
         idPrefix: 'sos',
       );
-      _meshClient.sendMessage(envelope);
+      // Queued if there is no link. A distress beacon raised out of coverage has
+      // to go out when coverage returns; dropping it was the worst case of the
+      // silent-send bug this guards against.
+      _meshClient.sendMessage(envelope, queueIfUnsent: true);
       _p2pMeshEngine.sendP2PDirectMessage(envelope);
       _addEventLog('EMERGENCY SOS BROADCAST', 'SOS distress beacon broadcast to squad', EventSeverity.alert);
     } catch (e) {
@@ -1694,6 +1847,8 @@ class _MainShellViewState extends State<MainShellView> {
 
   @override
   Widget build(BuildContext context) {
+    if (_instanceConflict) return _buildInstanceConflictScreen();
+
     final failure = _storageFailure;
     if (failure != null) return _buildStorageFailureScreen(failure);
 
@@ -1735,6 +1890,8 @@ class _MainShellViewState extends State<MainShellView> {
         onStartVoiceCall: (peer) => _startCall(peer, CallMedia.voice),
         onStartVideoCall: (peer) => _startCall(peer, CallMedia.video),
         onOpenChat: (peer) => _openConversation(Audience.direct(peer)),
+        focusController: _mapFocus,
+        onShowDiagnostics: _openNetworkDiagnostics,
       ),
       ConversationList(
         conversations: _buildConversations(),
@@ -1748,11 +1905,13 @@ class _MainShellViewState extends State<MainShellView> {
         onStartCall: (audience, media) {
           if (audience.isDirect) _startCall(audience.peer!, media);
         },
+        onLocateOnMap: _showOperatorOnMap,
       ),
       SettingsView(
         myProfile: _myProfile,
         teamProfiles: _teamProfiles,
         eventLogs: _eventLogs,
+        onShowDiagnostics: _openNetworkDiagnostics,
         onProfileUpdated: (updated) async {
           setState(() {
             _myProfile = updated;
@@ -1771,8 +1930,11 @@ class _MainShellViewState extends State<MainShellView> {
         },
         onClearData: () async {
           await _notifyContactsOfPurge();
-          // Nothing left to run in the background once the identity is gone.
-          await _backgroundComms.stop();
+          // Everything, not just the background service. The relay socket and
+          // the telemetry timer would otherwise keep running under the identity
+          // being destroyed, and the live stream subscriptions would survive
+          // into the next onboarding and double-process every envelope.
+          await _teardownServices();
 
           final prefs = await SharedPreferences.getInstance();
           await prefs.clear();
@@ -1785,11 +1947,6 @@ class _MainShellViewState extends State<MainShellView> {
           // Ratchet state derives every future message key for every
           // conversation, so it has to go the same way the identity keys do.
           await _pairwiseEngine.destroyAllSessions();
-
-          // prefs.clear() drops the persisted list, but the live distributor is
-          // still holding it in memory with a retry timer running. Onboarding
-          // builds a fresh one.
-          _teamKeyDistributor.dispose();
 
           setState(() {
             _myProfileInitialized = false;
@@ -1829,6 +1986,83 @@ class _MainShellViewState extends State<MainShellView> {
             label: 'Settings',
           ),
         ],
+      ),
+    );
+  }
+
+  /// Switches to the map and centres it on [peer], optionally tracking them.
+  ///
+  /// Raised from the squad list, where finding a member on the map previously
+  /// meant switching tabs and hunting for their marker.
+  void _showOperatorOnMap(OperatorProfile peer, {bool lock = false}) {
+    setState(() => _currentTab = AppTab.map);
+    // After the frame, so the map is built and its controller attached before
+    // being asked to move — on first switch it will not exist yet.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _mapFocus.focus(peer.id, lock: lock);
+    });
+  }
+
+  void _openNetworkDiagnostics() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => NetworkDiagnosticsView(
+          meshClient: _meshClient,
+          p2pMeshEngine: _p2pMeshEngine,
+          myProfile: _myProfile,
+          myTelemetry: _myTelemetry,
+          transportPolicy: _resolvedTransportPolicy,
+          transportPolicyDefine: _transportPolicyEnv,
+          p2pLinkPolicy: _resolvedP2PLinkPolicy,
+          hasPinnedRelayCa: _relayCaPemEnv.trim().isNotEmpty,
+          ice: WebRtcCallService.iceConfiguration,
+          teamProfiles: _teamProfiles,
+        ),
+      ),
+    );
+  }
+
+  /// Shown when a second copy of the app is running.
+  ///
+  /// Blocking rather than a warning. Two copies share one identity, one keychain
+  /// and one ratchet store: both authenticate to the relay under the same
+  /// operator ID, both receive every envelope, and each message key is consumed
+  /// by whichever copy reads it first — so the other reports "message key
+  /// already used" and drops it. Calls and messages stop arriving with nothing
+  /// on screen to explain why, which cost an evening to find from the outside.
+  Widget _buildInstanceConflictScreen() {
+    return Scaffold(
+      backgroundColor: C2Colors.slateBg,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.copy_all, color: Colors.redAccent, size: 64),
+              const SizedBox(height: 24),
+              const Text(
+                'VECTOR IS ALREADY RUNNING',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.0,
+                ),
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'Another copy of Vector holds this device\'s identity. Two copies '
+                'would share one set of message keys, and each message would '
+                'decrypt in only one of them — so calls and messages would stop '
+                'arriving in both.\n\n'
+                'Close the other copy, then reopen this one.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.6),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -2134,7 +2368,7 @@ class _MainShellViewState extends State<MainShellView> {
         msg = await _channel.sealTeam(type: audience.messageType, plaintext: text);
       }
 
-      final sentMesh = _meshClient.sendMessage(msg);
+      final sentMesh = _meshClient.sendMessage(msg, queueIfUnsent: true);
       final sentP2P = _p2pMeshEngine.sendP2PDirectMessage(msg);
       await _addGlobalMessage(
         msg.copyWith(

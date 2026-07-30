@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../models/c2_message.dart';
-
+import '../../models/operator_profile.dart';
 import '../../models/telemetry.dart';
 import '../../services/ptt_recorder.dart';
 import '../../services/webrtc_call_service.dart';
@@ -51,6 +51,10 @@ class ConversationList extends StatelessWidget {
   final Future<void> Function(Audience audience) onVoiceRecorded;
   final void Function(Audience audience, CallMedia media) onStartCall;
 
+  /// Jumps to the map centred on an operator. [lock] additionally engages
+  /// tracking, and is raised by a long press on the same control.
+  final void Function(OperatorProfile peer, {bool lock})? onLocateOnMap;
+
   const ConversationList({
     super.key,
     required this.conversations,
@@ -60,6 +64,7 @@ class ConversationList extends StatelessWidget {
     required this.ptt,
     required this.onVoiceRecorded,
     required this.onStartCall,
+    this.onLocateOnMap,
   });
 
   @override
@@ -280,6 +285,7 @@ class ConversationList extends StatelessWidget {
           onTap: () => onOpen(audience),
         ),
         _pttAction(audience),
+        if (audience.isDirect && onLocateOnMap != null) _locateAction(c),
         if (canCall)
           _action(
             icon: Icons.call,
@@ -314,6 +320,11 @@ class ConversationList extends StatelessWidget {
           onLongPressEnd: (_) => _finishPtt(audience),
           onLongPressCancel: () => _finishPtt(audience),
           child: Tooltip(
+            // The tooltip's own long-press recogniser shares this pointer and
+            // the same 500 ms deadline. Registered deeper in the tree, it won the
+            // arena first and rejected the long press above, so holding this
+            // control never opened the microphone at all.
+            triggerMode: TooltipTriggerMode.manual,
             message: 'Hold to talk to ${audience.label}',
             child: Container(
               margin: const EdgeInsets.only(right: 6),
@@ -340,6 +351,44 @@ class ConversationList extends StatelessWidget {
   Future<void> _finishPtt(Audience audience) async {
     if (ptt.activeAudience.value != audience) return;
     await onVoiceRecorded(audience);
+  }
+
+  /// Jump to this operator on the map.
+  ///
+  /// Finding a member used to mean switching to the map and hunting for their
+  /// marker, which is the wrong amount of work for the most common question an
+  /// operator asks of the roster. A hold engages tracking instead of a one-off
+  /// centre, for a member who is moving.
+  Widget _locateAction(ConversationSummary c) {
+    final peer = c.audience.peer!;
+    final hasFix = c.telemetry != null &&
+        !(c.telemetry!.latitude == 0.0 && c.telemetry!.longitude == 0.0);
+
+    return Tooltip(
+      // Manual: a long-press tooltip would enter the gesture arena and win it
+      // off the long-press below, which is what broke push-to-talk.
+      triggerMode: TooltipTriggerMode.manual,
+      message: hasFix
+          ? 'Show ${peer.callsign} on the map — hold to track'
+          : '${peer.callsign} has not reported a position',
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: () => onLocateOnMap!(peer, lock: false),
+        onLongPress: hasFix ? () => onLocateOnMap!(peer, lock: true) : null,
+        child: Container(
+          margin: const EdgeInsets.only(right: 6),
+          padding: const EdgeInsets.all(6),
+          decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.white10),
+          child: Icon(
+            hasFix ? Icons.my_location : Icons.location_disabled,
+            size: 16,
+            // Greyed rather than hidden: an operator with no fix is information,
+            // and a control that comes and goes between rows is harder to hit.
+            color: hasFix ? Colors.amberAccent : Colors.white24,
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _action({

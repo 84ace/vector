@@ -30,6 +30,10 @@ so the check it guarded could never fire.
 | `tls-only` | `https://` only. Even a LAN node must present a certificate. |
 | `any` | Plaintext to anything. See "split-horizon DNS" below. |
 
+**This governs the relay path only** — the seed URLs above and the relay socket
+that follows. Direct device-to-device links are a separate define; see "The P2P
+link policy" below. Setting `tls-only` does not encrypt them.
+
 A seed node skipped by this policy is reported in the operator's event log.
 Silently dropping it made a misconfigured deployment look identical to an
 outage.
@@ -39,6 +43,51 @@ cannot change the decision. The consequence is that a dotted name is treated as
 public even if it resolves to a LAN address. If you run split-horizon DNS
 (`c2.example.com` → `192.168.1.20` internally), either use a private-use name,
 serve TLS, or set `TRANSPORT_POLICY=any` deliberately.
+
+## The P2P link policy
+
+Devices also talk to each other directly, without a relay, when they are on the
+same subnet. **Those links are plaintext WebSocket and `TRANSPORT_POLICY` does
+not apply to them.** A build carrying `tls-only` still forms plaintext peer
+links; that is deliberate, and it is why this is a second define.
+
+| Value | Behaviour |
+|---|---|
+| `allow` (default) | Direct links are dialled and accepted, in the clear, on the local network. |
+| `deny` | No direct link is dialled, and the listener is never bound so none can be accepted either. The P2P mesh is off. |
+
+`deny` does not encrypt the mesh — it removes it. There is no `wss://` variant
+of a peer link to fall back to: two handsets on a subnet have no DNS name, no
+issuer that could sign for them, and no way to pin one peer's certificate into
+another device's build. That is the whole reason the policy is split. Refusing
+plaintext to a relay means "serve the certificate you can obtain"; refusing it
+between devices means "do not talk to each other".
+
+So set it only when you would rather have no local mesh than a plaintext one —
+typically when operators work on a subnet they do not control and a relay is
+always reachable. On an isolated deployment with no relay, `deny` leaves the app
+with no transport at all.
+
+```bash
+cd client && flutter build apk \
+  --dart-define=CLOUD_MESH_NODE_URL=https://c2.example.com \
+  --dart-define=TRANSPORT_POLICY=tls-only \
+  --dart-define=P2P_PLAINTEXT=deny
+```
+
+What a plaintext peer link exposes, to an observer already on that subnet: which
+operator IDs are linked, when, and message sizes. Not contents — the envelope is
+sealed end-to-end before it reaches the link — and not an entry point for a
+stranger: the link runs a mutual Ed25519 challenge/response in both directions
+and carries nothing but a pairing request until both ends are paired contacts.
+It is the same metadata exposure as Path C below, over one subnet hop. See
+`SECURITY.md`.
+
+Refused links are named in the operator's event log, and the diagnostics screen
+states the policy in the P2P section — a mesh switched off by a build define is
+otherwise indistinguishable from a subnet with nobody else on it. Both defines
+also warn in the event log if given a value they do not recognise, and fall back
+rather than guess.
 
 ## Path A — public node with a publicly-trusted certificate
 
@@ -285,6 +334,73 @@ flutter build apk --dart-define=STUN_SERVERS=
 The public servers are unreachable on such a network anyway, and leaving them
 configured only adds candidate-gathering delay to every call. With STUN off,
 host candidates carry the call, which is all a LAN needs.
+
+### Running your own TURN relay
+
+Two operators on different carrier networks, both behind NAT, have no direct
+path. Signalling succeeds and media then fails, which surfaces as `CALL FAILED`.
+The only fix is a relay both sides can reach.
+
+Running it yourself is the point of doing this at all: a third-party TURN
+service learns exactly the same metadata, so the choice is not whether someone
+sees it but who.
+
+```bash
+cd backend
+./scripts/make-turn-config.sh c2.84ace.com
+```
+
+That writes `certs/turnserver.conf` with a freshly generated credential and
+prints the certificate, firewall and client-build steps, filled in. It reuses
+the certificate the relay is already fronted with, so there is no second one to
+renew — but renewal has to restart coturn, which like the node reads the
+certificate once at startup.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.turn.yml up -d
+```
+
+These have to reach the host, or TURN cannot do its job:
+
+| Port | Protocol | Purpose |
+|---|---|---|
+| 3478 | UDP + TCP | STUN/TURN |
+| 5349 | TCP | TURN over TLS |
+| 49160–49200 | UDP | Relay ports, one per session participant |
+
+**Two things about this deployment that are easy to get wrong.**
+
+`external-ip` must be the public address, and coturn advertises it in every
+candidate it hands out. On a dynamic address behind DDNS — which is what
+`84ace.com` is — that value goes stale when the address changes, and calls fail
+with candidates pointing at somebody else's IP. Re-run the script and restart
+the container after an address change.
+
+The credential is compiled into the app binary and must be assumed recoverable
+by anyone holding a build. That is why the generated config carries a long
+`denied-peer-ip` block: without it, a recovered credential turns the relay into
+a proxy into whatever network it sits on, and `192.168.0.0/16` is reachable from
+it. Those denials are load-bearing, not defence in depth. Rotate the credential
+by re-running the script and rebuilding the clients.
+
+### The alternative: an overlay network
+
+A WireGuard overlay (Tailscale, or Headscale if a third-party control plane is
+unacceptable) solves the same problem differently, and solves more of them: with
+every device on the overlay, WebRTC gathers host candidates on the tunnel
+interface and calls need no media relay at all, and the node can stop being
+exposed publicly — which also retires the DNS-01 certificate dance above.
+
+It is more moving parts, not fewer: a tunnel on every device, and an identity
+system alongside the app's own. Two notes if you go that way:
+
+- Tailscale hands out addresses in `100.64.0.0/10`, which `TRANSPORT_POLICY`
+  already classifies as private — so plaintext `ws://100.x.y.z:8080` is
+  permitted under the default policy, with WireGuard providing transport
+  encryption and no certificate anywhere. A MagicDNS `*.ts.net` name is a dotted
+  public name and is *not* classified that way; use the address, or serve TLS.
+- It does not change the iOS background limitation. The tunnel stays up; Vector's
+  socket still does not survive suspension.
 
 ## Building the client for iOS
 

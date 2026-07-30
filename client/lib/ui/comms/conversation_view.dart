@@ -352,11 +352,22 @@ class _ConversationViewState extends State<ConversationView> {
       builder: (context, transmitting, _) {
         final accent = widget.audience.accent;
 
-        return GestureDetector(
-          onTapDown: (_) => widget.ptt.start(widget.audience),
-          onTapUp: (_) => _stopPtt(),
-          onTapCancel: _stopPtt,
+        // A raw Listener, not a GestureDetector.
+        //
+        // Tap recognisers compete in the gesture arena, and the Tooltip below
+        // registers a long-press recogniser of its own on the same pointer. At
+        // 500 ms the tooltip's recogniser force-won the arena, which rejected the
+        // tap and fired onTapCancel — so every transmission stopped itself half a
+        // second in, while the operator was still holding the button. A Listener
+        // never enters the arena and cannot be outvoted.
+        return Listener(
+          onPointerDown: (_) => widget.ptt.start(widget.audience),
+          onPointerUp: (_) => _stopPtt(),
+          onPointerCancel: (_) => _stopPtt(),
           child: Tooltip(
+            // Hover still shows this on desktop; only the touch long-press
+            // trigger is disabled.
+            triggerMode: TooltipTriggerMode.manual,
             message: 'Hold to talk to ${widget.audience.label}',
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 120),
