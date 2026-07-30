@@ -370,6 +370,21 @@ func (rs *RelayServer) RouteEnvelope(env *MessageEnvelope) {
 
 	if queueFor != "" {
 		rs.storeOfflineMessage(queueFor, env)
+		// The one case that most needs saying out loud. A message addressed to an
+		// operator ID that never connects is indistinguishable, from the sender's
+		// side, from one that was delivered — and the commonest cause is not an
+		// absent operator but a stale contact record: an operator ID is derived
+		// from the identity key, so a reinstall gives the same person a new ID
+		// while their peer keeps addressing the old one. Comparing the recipient
+		// here against the IDs that actually authenticate is what tells those
+		// apart in seconds instead of hours.
+		//
+		// This does record who addressed whom, which is the metadata SECURITY.md
+		// warns this node can see. It is limited to traffic that was *not*
+		// delivered, which is the trade being made deliberately: an undelivered
+		// message is already a fault worth reconstructing.
+		log.Printf("[RELAY] %s from %s queued: recipient %s is not connected",
+			env.Type, env.SenderID, queueFor)
 	}
 
 	// Deliberately only the failures. Logging every successful route would build
