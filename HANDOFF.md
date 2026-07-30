@@ -111,7 +111,24 @@ What remains:
 - The simulator has no camera, so QR scanning can only be exercised on a
   physical device. The paste-the-pairing-code path covers simulator testing.
 
-### 4. Smaller known gaps
+### 4. iOS cannot receive while suspended
+
+Background operation works on Android via `MeshForegroundService`, and on iOS the
+`location` and `audio` background modes keep telemetry flowing and PTT audio
+playing. But iOS will not keep the relay socket open, so **calls and messages do
+not reach a suspended iOS app** — they arrive when it is reopened.
+
+Fixing it needs PushKit/CallKit for calls and APNs for messages, which means the
+Go relay becomes a push sender and **Apple lands in the metadata path**: which
+device, when, how often. That is the same trade as TURN, refused for the same
+reason, and `SECURITY.md` says so. If it is ever implemented, that section and
+the "does not protect against" list both have to change.
+
+Worth knowing: iOS 16+ has a dedicated Push to Talk framework
+(`PTChannelManager`) built for this use case, which is the correct native path
+for PTT specifically and is more honest than a generic background hack.
+
+### 5. Smaller known gaps
 
 - **A team member who never returns stays behind.** Rotation is now tracked per
   recipient, retried whenever a route appears, and cleared only on

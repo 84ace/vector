@@ -211,15 +211,50 @@ class TelemetryService {
   /// A stationary device does not need high-accuracy fixes every few metres;
   /// a moving one does. This governs how often the GPS subsystem wakes at all,
   /// which is the larger share of the power cost.
+  /// Location settings for a continuous subscription, per platform.
+  ///
+  /// On Apple platforms this must be [AppleSettings] with
+  /// `allowBackgroundLocationUpdates`, or the position stream simply stops when
+  /// the app leaves the screen — which is the whole of iOS background telemetry.
+  /// It depends on `location` being listed in UIBackgroundModes; iOS throws if
+  /// the flag is set without it.
+  ///
+  /// Android deliberately uses the plain settings: geolocator's
+  /// `foregroundNotificationConfig` would stand up a *second* foreground service
+  /// alongside MeshForegroundService, giving the operator two notifications for
+  /// one app.
+  LocationSettings _streamSettings() {
+    final accuracy = _cadence.wantsHighAccuracy
+        ? LocationAccuracy.high
+        : LocationAccuracy.reduced;
+
+    if (Platform.isIOS || Platform.isMacOS) {
+      return AppleSettings(
+        accuracy: accuracy,
+        distanceFilter: _cadence.distanceFilterMeters,
+        allowBackgroundLocationUpdates: true,
+        // Apple requires the operator to be able to see that something is using
+        // location in the background, and hiding it would be the wrong call for
+        // this app regardless.
+        showBackgroundLocationIndicator: true,
+        // iOS pauses updates when it decides the device has stopped moving, and
+        // resuming is not guaranteed. A stationary operator still needs to
+        // appear on the map.
+        pauseLocationUpdatesAutomatically: false,
+        activityType: ActivityType.otherNavigation,
+      );
+    }
+
+    return LocationSettings(
+      accuracy: accuracy,
+      distanceFilter: _cadence.distanceFilterMeters,
+    );
+  }
+
   void _subscribePositionStream() {
     _positionSubscription?.cancel();
     _positionSubscription = Geolocator.getPositionStream(
-      locationSettings: LocationSettings(
-        accuracy: _cadence.wantsHighAccuracy
-            ? LocationAccuracy.high
-            : LocationAccuracy.reduced,
-        distanceFilter: _cadence.distanceFilterMeters,
-      ),
+      locationSettings: _streamSettings(),
     ).listen((position) {
       _applyPosition(position);
 

@@ -173,6 +173,36 @@ client's `dart:io` transport consults neither an iOS profile nor Android's user
 certificate store. A CA that will not parse is fatal at startup, by the same
 reasoning as a missing keystore. See `DEPLOYMENT.md`.
 
+## Background operation
+
+What an operator can rely on when Vector is not on screen differs by platform,
+and the difference is not a bug that will be fixed by configuration.
+
+**Android** runs a foreground service (`MeshForegroundService`) that holds the
+process open and takes a partial wake lock. Everything then behaves as it does in
+the foreground: telemetry keeps transmitting, the relay socket and P2P discovery
+stay up, and messages and call signalling keep arriving. A notification is
+visible for exactly as long as that is true — required by the platform, and
+honest besides. The service hosts no isolate of its own; a second isolate would
+mean a second writer for the same ratchet state, which would desynchronise the
+chain.
+
+It has to be started while the app is in the foreground, because Android 12 and
+later refuse a foreground service started from the background, and Android 14 and
+later refuse a location-typed one unless the location permission is actually held.
+If either applies, background comms do not start and the operator is told so in
+the event log rather than discovering it from a silent gap in telemetry.
+
+**iOS** keeps telemetry flowing and lets push-to-talk audio finish playing, via
+the `location` and `audio` background modes. It does **not** keep the relay
+socket alive — no entitlement does — so **an incoming call or message will not
+reach a suspended app.** It arrives when the operator next opens Vector.
+
+Closing that gap needs a push, and a push means the relay talking to APNs, which
+would put **Apple in the metadata path**: which device, when, how often. That is
+the same trade as TURN and it is refused for the same reason, so it is not
+implemented. Plan around it: on iOS, treat Vector as reachable when it is open.
+
 ## Pairing
 
 1. Operator A scans B's QR code. This is the out-of-band step: it carries B's
@@ -235,6 +265,11 @@ did not have:
 - **Local network presence.** P2P discovery broadcasts the device's identity key
   to the subnet every 10 seconds. It can be disabled, and the app falls back to
   the relay.
+- **An iOS device is not reachable while suspended.** Telemetry continues, but
+  calls and messages do not arrive until the app is reopened. See "Background
+  operation" — closing this would require putting Apple in the metadata path.
+- **Android advertises its own presence.** The foreground service notification
+  makes it visible on the lock screen that the operator is running Vector.
 - **No node-to-node authentication.** `/announce` accepts peer records from
   private addresses only. Federation across untrusted networks would need node
   identity keys, which is not implemented.

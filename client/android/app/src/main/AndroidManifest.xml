@@ -7,6 +7,13 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <!-- Keeps the CPU scheduled during Doze so telemetry keeps going out and the
+         relay keepalive keeps answering. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Android 13+. A foreground service runs without it, but its notification
+         is invisible, which for this app means the operator cannot tell whether
+         background comms are actually running. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:label="Vector"
@@ -34,6 +41,20 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- Keeps the process alive so the relay socket, P2P discovery and
+             telemetry survive backgrounding. See MeshForegroundService: it hosts
+             no isolate of its own, it only stops the process being killed.
+
+             foregroundServiceType=location is the honest declaration — the
+             service exists so position keeps being shared — and unlike dataSync
+             it carries no daily time cap. Android 14+ requires the matching
+             runtime permission to be held when startForeground is called, which
+             is why Dart starts this only after location has been granted. -->
+        <service
+            android:name=".MeshForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

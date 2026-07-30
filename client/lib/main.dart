@@ -15,6 +15,7 @@ import 'models/c2_event_log.dart';
 import 'models/c2_message.dart';
 import 'models/operator_profile.dart';
 import 'models/telemetry.dart';
+import 'services/background_comms.dart';
 import 'services/mesh_client.dart';
 import 'services/p2p_mesh_engine.dart';
 import 'services/ptt_audio_service.dart';
@@ -131,6 +132,7 @@ class _MainShellViewState extends State<MainShellView> {
   late PttRecorder _pttRecorder;
   late WebRtcCallService _callService;
   late TeamKeyDistributor _teamKeyDistributor;
+  final BackgroundComms _backgroundComms = BackgroundComms();
 
   final List<StreamSubscription> _subscriptions = [];
 
@@ -250,7 +252,20 @@ class _MainShellViewState extends State<MainShellView> {
 
   Future<void> _initializeServices(OperatorProfile profile) async {
     try {
-      await [Permission.microphone, Permission.location, Permission.camera].request();
+      await [
+        Permission.microphone,
+        Permission.location,
+        Permission.camera,
+        // Android 13+. Without it the foreground service still runs but its
+        // notification is invisible, so an operator cannot tell whether
+        // background comms are actually up.
+        Permission.notification,
+      ].request();
+      // Background telemetry needs "allow all the time", which Android will only
+      // grant as a second, separate prompt after foreground location.
+      if (await Permission.location.isGranted) {
+        await Permission.locationAlways.request();
+      }
     } catch (_) {}
 
     // Identity keys live in the Keychain / Android Keystore, not in
@@ -533,6 +548,23 @@ class _MainShellViewState extends State<MainShellView> {
     _meshClient.start();
     await _p2pMeshEngine.start();
     await _telemetryService.startReporting();
+
+    // Started here, in the foreground, and not from a lifecycle callback:
+    // Android 12+ refuses a foreground service started from the background, so
+    // waiting until the app is actually backgrounded is exactly what fails.
+    await _backgroundComms.start();
+    final backgroundAdvisory = _backgroundComms.advisory;
+    if (backgroundAdvisory != null) {
+      _addEventLog(
+        _backgroundComms.status == BackgroundCommsStatus.active
+            ? 'BACKGROUND COMMS ACTIVE'
+            : 'BACKGROUND COMMS UNAVAILABLE',
+        backgroundAdvisory,
+        _backgroundComms.status == BackgroundCommsStatus.active
+            ? EventSeverity.info
+            : EventSeverity.warning,
+      );
+    }
 
     // Anything left pending from a previous run resumes retrying now.
     _schedulePairRetries();
@@ -1646,6 +1678,9 @@ class _MainShellViewState extends State<MainShellView> {
 
     if (_myProfileInitialized) {
       _teamKeyDistributor.dispose();
+      // Take the notification down with the app, or it outlives the comms it
+      // claims to be running.
+      unawaited(_backgroundComms.stop());
       // Fire-and-forget: dispose() cannot await, but each of these closes its
       // own sockets, timers and stream controllers rather than leaking them.
       unawaited(PttAudioService.disposeGlobalListener());
@@ -1736,6 +1771,8 @@ class _MainShellViewState extends State<MainShellView> {
         },
         onClearData: () async {
           await _notifyContactsOfPurge();
+          // Nothing left to run in the background once the identity is gone.
+          await _backgroundComms.stop();
 
           final prefs = await SharedPreferences.getInstance();
           await prefs.clear();

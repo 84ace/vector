@@ -76,5 +76,21 @@
 	<string>This app requires access to your microphone for end-to-end encrypted push-to-talk voice calls.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>This app requires access to your camera for E2EE video calls and scanning QR codes to pair contacts.</string>
+	<!-- Background execution.
+	     `location` is what keeps telemetry going once the app leaves the screen,
+	     and it is required for geolocator's allowBackgroundLocationUpdates to be
+	     legal — iOS throws if that flag is set without this mode declared.
+	     `audio` lets a push-to-talk clip or call audio finish playing rather than
+	     being cut off mid-transmission.
+
+	     Note what is deliberately absent: `voip`. Keeping the relay socket alive
+	     indefinitely is not something iOS permits by any means, so an incoming
+	     call or message will not wake a suspended app. That needs a PushKit/APNs
+	     push, which would put Apple in the metadata path — see SECURITY.md. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+		<string>audio</string>
+	</array>
 </dict>
 </plist>
