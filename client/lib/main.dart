@@ -29,9 +29,11 @@ import 'ui/chat/audience_selector.dart';
 import 'ui/chat/call_screen.dart';
 import 'ui/comms/conversation_list.dart';
 import 'ui/comms/conversation_view.dart';
+import 'ui/map/map_focus_controller.dart';
 import 'ui/map/tactical_map_view.dart';
 import 'ui/onboarding/onboarding_view.dart';
 import 'ui/onboarding/qr_pairing_view.dart';
+import 'ui/settings/network_diagnostics_view.dart';
 import 'ui/settings/settings_view.dart';
 import 'ui/theme/c2_colors.dart';
 
@@ -142,12 +144,26 @@ class _MainShellViewState extends State<MainShellView> {
   Map<String, Telemetry> _teamTelemetry = {};
   String? _activeSosOperatorCallsign;
 
+  /// Carries "show me this operator" from the squad list over to the map, which
+  /// is a sibling in the same [IndexedStack] and so cannot be called directly.
+  final MapFocusController _mapFocus = MapFocusController();
+
   static const String _cloudNodeEnv =
       String.fromEnvironment('CLOUD_MESH_NODE_URL', defaultValue: '');
   static const String _nasNodeEnv =
       String.fromEnvironment('NAS_MESH_NODE_URL', defaultValue: '');
   static const String _localNodeEnv =
-      String.fromEnvironment('LOCAL_MESH_NODE_URL', defaultValue: 'http://127.0.0.1:8080');
+      String.fromEnvironment('LOCAL_MESH_NODE_URL', defaultValue: '');
+
+  /// Used only when no seed at all was configured, so that a bare `flutter run`
+  /// still finds a node on the developer's machine.
+  ///
+  /// It is not in the list unconditionally any more. It used to be, and under
+  /// `TRANSPORT_POLICY=tls-only` a plaintext loopback seed is refused on every
+  /// launch — which wrote a red security-severity line to the operator's event
+  /// log of a build that was configured entirely correctly. A refusal is meant
+  /// to mean "a node you asked for was skipped", and that one never was.
+  static const String _loopbackFallbackNode = 'http://127.0.0.1:8080';
   static const String _fieldRouterEnv =
       String.fromEnvironment('FIELD_ROUTER_NODE_URL', defaultValue: '');
 
@@ -159,6 +175,16 @@ class _MainShellViewState extends State<MainShellView> {
   static const String _transportPolicyEnv =
       String.fromEnvironment('TRANSPORT_POLICY', defaultValue: 'private');
 
+  /// Whether device-to-device links may run in the clear.
+  ///
+  /// Separate from `TRANSPORT_POLICY`, and not implied by it. A relay can be
+  /// given a certificate; two handsets on a subnet cannot, so denying plaintext
+  /// there switches the mesh off rather than encrypting it. [P2PLinkPolicy]
+  /// carries the full reasoning and SECURITY.md states what the plaintext link
+  /// does and does not expose.
+  static const String _p2pPlaintextEnv =
+      String.fromEnvironment('P2P_PLAINTEXT', defaultValue: 'allow');
+
   /// Base64 PEM of a CA to trust for relay certificates, on top of the platform
   /// roots. Needed for wss:// on an isolated network, which has no way to obtain
   /// a publicly-trusted certificate. See DEPLOYMENT.md.
@@ -167,12 +193,16 @@ class _MainShellViewState extends State<MainShellView> {
 
   /// Seed nodes come from --dart-define at build time. Nothing is hardcoded to a
   /// specific deployment any more: a build with no defines only tries localhost.
-  List<String> get candidateMeshNodes => [
-        _cloudNodeEnv,
-        _nasNodeEnv,
-        _localNodeEnv,
-        _fieldRouterEnv,
-      ].where((url) => url.isNotEmpty).toList();
+  List<String> get candidateMeshNodes {
+    final configured = [
+      _cloudNodeEnv,
+      _nasNodeEnv,
+      _localNodeEnv,
+      _fieldRouterEnv,
+    ].where((url) => url.isNotEmpty).toList();
+
+    return configured.isEmpty ? [_loopbackFallbackNode] : configured;
+  }
 
   /// Maps the build-time define onto a policy, defaulting to the safe end.
   ///
@@ -194,6 +224,16 @@ class _MainShellViewState extends State<MainShellView> {
         return null;
     }
   }
+
+  /// The policy actually in force, with the fallback applied.
+  static TransportPolicy get _resolvedTransportPolicy =>
+      _parseTransportPolicy(_transportPolicyEnv) ?? TransportPolicy.privateNetworkPlaintext;
+
+  /// The P2P link policy in force. An unrecognised value keeps the mesh up and
+  /// says so in the event log — the strict end here is "no P2P at all", which
+  /// is not something a typo should be able to switch on.
+  static P2PLinkPolicy get _resolvedP2PLinkPolicy =>
+      parseP2PLinkPolicy(_p2pPlaintextEnv) ?? P2PLinkPolicy.plaintextAllowed;
 
   @override
   void initState() {
@@ -391,8 +431,7 @@ class _MainShellViewState extends State<MainShellView> {
     _meshClient = MeshClient(
       identity: _identity,
       seedNodeUrls: candidateMeshNodes,
-      transportPolicy: _parseTransportPolicy(_transportPolicyEnv) ??
-          TransportPolicy.privateNetworkPlaintext,
+      transportPolicy: _resolvedTransportPolicy,
       trustContext: relayTrust,
     );
 
@@ -406,11 +445,22 @@ class _MainShellViewState extends State<MainShellView> {
       );
     }
 
+    if (parseP2PLinkPolicy(_p2pPlaintextEnv) == null) {
+      _addEventLog(
+        'UNKNOWN P2P_PLAINTEXT VALUE',
+        'Build defines P2P_PLAINTEXT="$_p2pPlaintextEnv", which is not one of '
+            'allow / deny. Falling back to "allow": direct device-to-device '
+            'links are formed in the clear on the local network.',
+        EventSeverity.warning,
+      );
+    }
+
     _p2pMeshEngine = P2PMeshEngine(
       identity: _identity,
       p2pPort: 9090,
       isPairedContact: (id) => _findContact(id) != null,
       announceEnabled: prefs.getBool('p2p_announce') ?? true,
+      linkPolicy: _resolvedP2PLinkPolicy,
     );
 
     _telemetryService = TelemetryService(
@@ -508,6 +558,12 @@ class _MainShellViewState extends State<MainShellView> {
       _meshClient.transportRefusals.listen((detail) {
         if (!mounted) return;
         _addEventLog('NODE SKIPPED: INSECURE TRANSPORT', detail, EventSeverity.security);
+      }),
+      // A mesh disabled by build define is otherwise indistinguishable from a
+      // subnet with nobody else on it.
+      _p2pMeshEngine.linkRefusals.listen((detail) {
+        if (!mounted) return;
+        _addEventLog('P2P LINK REFUSED: PLAINTEXT DISABLED', detail, EventSeverity.security);
       }),
       _p2pMeshEngine.incomingP2PMessages.listen(_processIncomingMessage),
       _p2pMeshEngine.discoveredPeers.listen((peers) {
@@ -1061,7 +1117,7 @@ class _MainShellViewState extends State<MainShellView> {
         plaintext: jsonEncode(payload),
         idPrefix: idPrefix,
       );
-      final sentMesh = _meshClient.sendMessage(envelope);
+      final sentMesh = _meshClient.sendMessage(envelope, queueIfUnsent: true);
       final sentP2P = _p2pMeshEngine.sendP2PDirectMessage(envelope);
       return sentMesh || sentP2P;
     } catch (e) {
@@ -1626,7 +1682,10 @@ class _MainShellViewState extends State<MainShellView> {
         }),
         idPrefix: 'sos',
       );
-      _meshClient.sendMessage(envelope);
+      // Queued if there is no link. A distress beacon raised out of coverage has
+      // to go out when coverage returns; dropping it was the worst case of the
+      // silent-send bug this guards against.
+      _meshClient.sendMessage(envelope, queueIfUnsent: true);
       _p2pMeshEngine.sendP2PDirectMessage(envelope);
       _addEventLog('EMERGENCY SOS BROADCAST', 'SOS distress beacon broadcast to squad', EventSeverity.alert);
     } catch (e) {
@@ -1735,6 +1794,8 @@ class _MainShellViewState extends State<MainShellView> {
         onStartVoiceCall: (peer) => _startCall(peer, CallMedia.voice),
         onStartVideoCall: (peer) => _startCall(peer, CallMedia.video),
         onOpenChat: (peer) => _openConversation(Audience.direct(peer)),
+        focusController: _mapFocus,
+        onShowDiagnostics: _openNetworkDiagnostics,
       ),
       ConversationList(
         conversations: _buildConversations(),
@@ -1748,11 +1809,13 @@ class _MainShellViewState extends State<MainShellView> {
         onStartCall: (audience, media) {
           if (audience.isDirect) _startCall(audience.peer!, media);
         },
+        onLocateOnMap: _showOperatorOnMap,
       ),
       SettingsView(
         myProfile: _myProfile,
         teamProfiles: _teamProfiles,
         eventLogs: _eventLogs,
+        onShowDiagnostics: _openNetworkDiagnostics,
         onProfileUpdated: (updated) async {
           setState(() {
             _myProfile = updated;
@@ -1829,6 +1892,38 @@ class _MainShellViewState extends State<MainShellView> {
             label: 'Settings',
           ),
         ],
+      ),
+    );
+  }
+
+  /// Switches to the map and centres it on [peer], optionally tracking them.
+  ///
+  /// Raised from the squad list, where finding a member on the map previously
+  /// meant switching tabs and hunting for their marker.
+  void _showOperatorOnMap(OperatorProfile peer, {bool lock = false}) {
+    setState(() => _currentTab = AppTab.map);
+    // After the frame, so the map is built and its controller attached before
+    // being asked to move — on first switch it will not exist yet.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _mapFocus.focus(peer.id, lock: lock);
+    });
+  }
+
+  void _openNetworkDiagnostics() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => NetworkDiagnosticsView(
+          meshClient: _meshClient,
+          p2pMeshEngine: _p2pMeshEngine,
+          myProfile: _myProfile,
+          myTelemetry: _myTelemetry,
+          transportPolicy: _resolvedTransportPolicy,
+          transportPolicyDefine: _transportPolicyEnv,
+          p2pLinkPolicy: _resolvedP2PLinkPolicy,
+          hasPinnedRelayCa: _relayCaPemEnv.trim().isNotEmpty,
+          ice: WebRtcCallService.iceConfiguration,
+          teamProfiles: _teamProfiles,
+        ),
       ),
     );
   }
@@ -2134,7 +2229,7 @@ class _MainShellViewState extends State<MainShellView> {
         msg = await _channel.sealTeam(type: audience.messageType, plaintext: text);
       }
 
-      final sentMesh = _meshClient.sendMessage(msg);
+      final sentMesh = _meshClient.sendMessage(msg, queueIfUnsent: true);
       final sentP2P = _p2pMeshEngine.sendP2PDirectMessage(msg);
       await _addGlobalMessage(
         msg.copyWith(

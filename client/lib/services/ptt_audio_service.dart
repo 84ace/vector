@@ -540,6 +540,22 @@ class PttAudioService {
     HapticFeedback.heavyImpact();
   }
 
+  /// The cue for the operator's *own* transmission starting.
+  ///
+  /// Deliberately not [playRadioAlert]. That routes a generated tone through
+  /// `audioplayers`, which owns the shared `AVAudioSession`: on iOS it sets the
+  /// category to `playback` — which has no record capability — and then calls
+  /// `setActive(false)` when the 200 ms tone finishes, roughly a quarter of a
+  /// second into the recording it has just interrupted. The transmission died
+  /// on its own with nothing in the log to say why.
+  ///
+  /// A system sound goes through `AudioServicesPlaySystemSound` instead, which
+  /// does not reconfigure the session, so the microphone keeps its claim on it.
+  static void playTransmitCue() {
+    HapticFeedback.heavyImpact();
+    unawaited(SystemSound.play(SystemSoundType.click));
+  }
+
   static void playRadioClick() {
     playPcmWavAudio(frequency: 880.0, amplitude: 0.6, durationMs: 100);
     HapticFeedback.lightImpact();

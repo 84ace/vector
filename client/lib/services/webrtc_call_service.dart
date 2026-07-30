@@ -458,7 +458,7 @@ class WebRtcCallService {
         plaintext: jsonEncode(payload),
         idPrefix: 'call',
       );
-      final sentMesh = meshClient.sendMessage(envelope);
+      final sentMesh = meshClient.sendMessage(envelope, queueIfUnsent: true);
       final sentP2P = p2pMeshEngine.sendP2PDirectMessage(envelope);
 
       if (!sentMesh && !sentP2P) {

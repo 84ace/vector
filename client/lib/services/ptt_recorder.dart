@@ -61,6 +61,19 @@ class PttRecorder {
   Timer? _levelTimer;
   bool _busy = false;
 
+  /// The in-flight [start], so [stop] can wait for it instead of tearing down a
+  /// recorder that is still being brought up.
+  ///
+  /// A press shorter than the time `start` takes used to interleave the two:
+  /// `stop` nulled `_recorder` while `start` was still awaiting, and `start`
+  /// then either threw on a null recorder or left an orphan capture running with
+  /// `isTransmitting` already false.
+  Future<void>? _starting;
+
+  /// Incremented on every press, so a `start` that finishes late can tell that
+  /// its transmission has already been ended and stand down.
+  int _generation = 0;
+
   PttCodecProfile _codec = PttCodecProfile.narrowband;
 
   RecordConfig get _config => switch (_codec) {
@@ -96,33 +109,60 @@ class PttRecorder {
     isTransmitting.value = true;
     activeAudience.value = audience;
     _pressedAt = DateTime.now();
+    _startedAt = null;
+    final generation = ++_generation;
 
-    PttAudioService.playRadioAlert();
-    await Future<void>.delayed(const Duration(milliseconds: 180));
-    await _send('PTT_START', audience);
+    // Haptic and a system sound rather than a generated tone: the tone used to
+    // be played through audioplayers, which takes over the iOS audio session and
+    // hands it back mid-recording. See PttAudioService.playTransmitCue.
+    PttAudioService.playTransmitCue();
 
+    final starting = _bringUpRecorder(generation);
+    _starting = starting;
+    await starting;
+    _starting = null;
+    _busy = false;
+
+    // Announcing the transmission is not worth delaying the capture for: it used
+    // to be awaited first, along with a 180 ms sleep for the start tone, so the
+    // first word of every transmission was recorded after the operator said it.
+    if (_generation == generation && isTransmitting.value) {
+      unawaited(_send('PTT_START', audience));
+      _startLevelAnimation();
+    }
+  }
+
+  Future<void> _bringUpRecorder(int generation) async {
     try {
       await _recorder?.dispose();
-      _recorder = AudioRecorder();
+      if (_generation != generation) return;
 
-      var granted = await _recorder!.hasPermission();
+      final recorder = AudioRecorder();
+      _recorder = recorder;
+
+      var granted = await recorder.hasPermission();
       if (!granted) granted = (await Permission.microphone.request()).isGranted;
 
-      if (granted) {
-        final tempDir = await getTemporaryDirectory();
-        await Directory(tempDir.path).create(recursive: true);
-        _path = '${tempDir.path}/ptt_${DateTime.now().microsecondsSinceEpoch}.m4a';
-        await _recorder!.start(_config, path: _path!);
-        _startedAt = DateTime.now();
-      } else {
+      if (!granted) {
         debugPrint('[PTT] Microphone permission denied');
+        return;
       }
+
+      // The press may already have ended while permission was being resolved.
+      if (_generation != generation) {
+        await recorder.dispose();
+        if (_recorder == recorder) _recorder = null;
+        return;
+      }
+
+      final tempDir = await getTemporaryDirectory();
+      await Directory(tempDir.path).create(recursive: true);
+      _path = '${tempDir.path}/ptt_${DateTime.now().microsecondsSinceEpoch}.m4a';
+      await recorder.start(_config, path: _path!);
+      _startedAt = DateTime.now();
     } catch (e) {
       debugPrint('[PTT] Recorder start failed: $e');
     }
-
-    _busy = false;
-    _startLevelAnimation();
   }
 
   /// Ends the transmission and sends the clip.
@@ -131,6 +171,15 @@ class PttRecorder {
   /// or null if nothing usable was recorded.
   Future<PttVoiceClip?> stop(Audience audience) async {
     if (!isTransmitting.value) return null;
+
+    // Never tear down a recorder that is still coming up. Without this the two
+    // interleave on a short press and the capture is lost.
+    final starting = _starting;
+    if (starting != null) {
+      try {
+        await starting;
+      } catch (_) {}
+    }
 
     _levelTimer?.cancel();
     final stoppedAt = DateTime.now();
@@ -144,6 +193,8 @@ class PttRecorder {
     isTransmitting.value = false;
     activeAudience.value = null;
     amplitude.value = 0;
+    // Any late asynchronous work from this press should stand down.
+    _generation++;
     await Future<void>.delayed(const Duration(milliseconds: 200));
 
     String? recordedPath;
@@ -218,7 +269,9 @@ class PttRecorder {
         );
       }
 
-      meshClient.sendMessage(msg);
+      // Voice clips are store-and-forward by design — they have to survive the
+      // recipient being offline, and so do they the sender being offline.
+      meshClient.sendMessage(msg, queueIfUnsent: true);
       p2pMeshEngine.sendP2PDirectMessage(msg);
     } catch (e) {
       debugPrint('[PTT] Failed to seal payload: $e');

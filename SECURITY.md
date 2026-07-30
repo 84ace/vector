@@ -162,6 +162,35 @@ plaintext node is skipped and the reason is written to the operator's event log 
 silently dropping it made a misconfiguration look identical to an outage. Build
 with `TRANSPORT_POLICY=tls-only` to require TLS on the LAN too.
 
+**`TRANSPORT_POLICY` governs the relay path only.** It applies to the seed nodes
+in the build's `*_MESH_NODE_URL` defines and to the relay socket that follows.
+**Direct device-to-device links are always plaintext WebSocket** — `tls-only`
+does not change that, and a build carrying it still forms plaintext links on the
+LAN. The two are separate because they are not the same choice: a relay node has
+an address an operator controls, so it can be issued a certificate, and refusing
+plaintext means "use the one you can obtain". Two handsets have no name, no
+issuer, and no way to pin one peer's leaf into another's build, so refusing
+plaintext there would not encrypt the link — it would remove the only transport
+that works when no relay is reachable, which is the deployment this app exists
+for.
+
+What a plaintext peer link exposes to an observer already on the subnet: which
+operator IDs are linked, when, and message sizes. Not contents — envelopes are
+sealed end-to-end before they reach the link, exactly as on the relay path — and
+not an opening for a stranger, since the link runs the mutual Ed25519 handshake
+above and carries nothing but a pairing request until both ends are paired
+contacts. It is the same metadata exposure as `Path C` in `DEPLOYMENT.md`, over
+one subnet hop.
+
+A deployment that will not accept that builds with
+`--dart-define=P2P_PLAINTEXT=deny`. It is an independent define, and it is the
+honest one: it does not encrypt the mesh, it switches it off. The device then
+reaches other operators through a relay or not at all, and the refusal is
+written to the event log naming what was skipped — a disabled mesh and an empty
+subnet look identical otherwise. The scoping is pinned by
+`client/test/p2p_link_policy_test.dart`, so neither define can later be made to
+imply the other without the test going red.
+
 Classification is syntactic, with no DNS lookup, so whoever answers the query
 cannot influence it. A dotted name therefore counts as routable even if it
 resolves to a LAN address; `TRANSPORT_POLICY=any` exists for split-horizon DNS.
@@ -265,6 +294,9 @@ did not have:
 - **Local network presence.** P2P discovery broadcasts the device's identity key
   to the subnet every 10 seconds. It can be disabled, and the app falls back to
   the relay.
+- **Direct peer links are plaintext.** `TRANSPORT_POLICY` does not cover them —
+  see "Transport" above for why, and for what the link does and does not expose.
+  `P2P_PLAINTEXT=deny` disables the mesh rather than encrypting it.
 - **An iOS device is not reachable while suspended.** Telemetry continues, but
   calls and messages do not arrive until the app is reopened. See "Background
   operation" — closing this would require putting Apple in the metadata path.

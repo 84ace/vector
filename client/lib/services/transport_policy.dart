@@ -19,7 +19,12 @@ enum NodeLocality {
   publicNetwork,
 }
 
-/// How much the client is willing to trust an unencrypted transport.
+/// How much the client is willing to trust an unencrypted transport **to a
+/// relay node**.
+///
+/// Scoped to the relay path on purpose. Device-to-device links are governed
+/// separately by [P2PLinkPolicy] — see the note there for why the two decisions
+/// are not the same decision.
 enum TransportPolicy {
   /// Plaintext only where it cannot leave the local network. TLS is required
   /// for anything routable. This is the default.
@@ -37,6 +42,70 @@ enum TransportPolicy {
   /// split-horizon DNS where the syntactic check gets the wrong answer.
   allowAllPlaintext,
 }
+
+/// Whether device-to-device links may run in the clear.
+///
+/// Deliberately a separate decision from [TransportPolicy], and separately
+/// configured, because the two paths are not comparable:
+///
+/// - A relay link can be upgraded. A node has an address an operator controls,
+///   so it can be issued a certificate — publicly trusted, or from an internal
+///   CA pinned with `RELAY_CA_PEM_BASE64`. Refusing plaintext there means "use
+///   the certificate you can obtain".
+/// - A direct link cannot. There is no certificate infrastructure for handsets:
+///   no name, no issuer, no way to pin one peer's leaf into another's build.
+///   Refusing plaintext there does not upgrade the link, it removes it — and
+///   with it the only transport that works when no relay is reachable, which is
+///   the deployment this app exists for.
+///
+/// What the plaintext link exposes is stated in SECURITY.md: routing metadata
+/// to an observer already on the local subnet. Bodies are sealed end-to-end
+/// before they reach the link, and the link itself is authenticated in both
+/// directions by Ed25519 challenge/response against paired contacts.
+///
+/// So folding this into `TRANSPORT_POLICY=tls-only` would have made "require a
+/// certificate for the relay" silently mean "switch the mesh off". An operator
+/// who wants that gets to ask for it.
+enum P2PLinkPolicy {
+  /// Direct links are dialled and accepted over plaintext WebSocket. Default,
+  /// and unaffected by [TransportPolicy].
+  plaintextAllowed,
+
+  /// No plaintext direct link is dialled, and none is accepted. Since there is
+  /// no encrypted alternative, this disables the P2P mesh outright: the device
+  /// reaches other operators through a relay or not at all.
+  plaintextDenied,
+}
+
+/// Maps the `P2P_PLAINTEXT` build define onto a policy.
+///
+/// Returns null when the value was not understood, so the caller can say so in
+/// the event log rather than a typo deciding this quietly. Callers apply
+/// [P2PLinkPolicy.plaintextAllowed] as the fallback: the permissive end here,
+/// unlike [TransportPolicy], because the strict end is not a stricter version
+/// of the same link, it is no link.
+P2PLinkPolicy? parseP2PLinkPolicy(String raw) {
+  switch (raw.trim().toLowerCase()) {
+    case 'allow':
+    case '':
+      return P2PLinkPolicy.plaintextAllowed;
+    case 'deny':
+    case 'disable':
+      return P2PLinkPolicy.plaintextDenied;
+    default:
+      return null;
+  }
+}
+
+/// Why a direct link was not formed, for the operator's event log.
+///
+/// Written wherever a P2P dial is skipped, because the alternative — a mesh
+/// that simply never finds anyone — is indistinguishable from being out of
+/// range of every other device.
+const String p2pPlaintextRefusalReason =
+    'device-to-device links are plaintext and this build sets '
+    'P2P_PLAINTEXT=deny, so the P2P mesh is disabled. Traffic routes through a '
+    'relay node only.';
 
 /// Name suffixes reserved for private use, so a plaintext hop cannot leave the
 /// operator's own network. `.local` is mDNS; `.home.arpa` is RFC 8375; the rest
@@ -115,7 +184,11 @@ NodeLocality _classifyIPv4(List<int> b) {
   return NodeLocality.publicNetwork;
 }
 
-/// Whether [policy] permits connecting to [url].
+/// Whether [policy] permits connecting to a relay node at [url].
+///
+/// Relay seeds only. Direct peer links do not pass through here — they have no
+/// URL an operator configured and no certificate they could present; see
+/// [P2PLinkPolicy].
 ///
 /// `https` is always allowed. Plaintext depends on where the node sits: the
 /// default refuses it for anything routable, because envelope bodies staying

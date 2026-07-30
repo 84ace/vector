@@ -10,6 +10,8 @@ import '../theme/c2_colors.dart';
 import 'profile_marker.dart';
 import 'vectoring_tool.dart';
 import 'arcgis_layer_panel.dart';
+import 'map_focus_controller.dart';
+import 'offscreen_member_layer.dart';
 
 enum MapTileTheme { darkVector, satellite, topoTerrain }
 
@@ -32,6 +34,14 @@ class TacticalMapView extends StatefulWidget {
   /// that already carries position and situational awareness.
   final VoidCallback? onTriggerSos;
 
+  /// Carries "show me this operator" requests in from the squad list.
+  final MapFocusController? focusController;
+
+  /// Opens the network diagnostics screen. The connection pill is where an
+  /// operator looks first when something is wrong, so it is also where the
+  /// detail behind it belongs.
+  final VoidCallback? onShowDiagnostics;
+
   const TacticalMapView({
     super.key,
     required this.myProfile,
@@ -48,6 +58,8 @@ class TacticalMapView extends StatefulWidget {
     this.onOpenChat,
     this.activeSosOperatorCallsign,
     this.onTriggerSos,
+    this.focusController,
+    this.onShowDiagnostics,
   });
 
   @override
@@ -75,17 +87,41 @@ class _TacticalMapViewState extends State<TacticalMapView> {
 
   bool _hasInitialCentered = false;
 
+  /// The operator the camera is following, if any.
+  ///
+  /// Locking is deliberately sticky: it survives panning, because a lock that
+  /// broke the moment a finger brushed the map would be useless while moving.
+  /// The banner across the top is the way out of it.
+  String? _lockedOperatorId;
+
+  /// Where the locked operator was when we last moved the camera, so an
+  /// unchanged position report does not re-issue a move every rebuild.
+  LatLng? _lastTrackedPosition;
+
   @override
   void initState() {
     super.initState();
     if (widget.myTelemetry != null && widget.myTelemetry!.latitude != 0.0) {
       _hasInitialCentered = true;
     }
+    widget.focusController?.addListener(_handleFocusRequest);
+  }
+
+  @override
+  void dispose() {
+    widget.focusController?.removeListener(_handleFocusRequest);
+    super.dispose();
   }
 
   @override
   void didUpdateWidget(TacticalMapView oldWidget) {
     super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.focusController != widget.focusController) {
+      oldWidget.focusController?.removeListener(_handleFocusRequest);
+      widget.focusController?.addListener(_handleFocusRequest);
+    }
+
     if (!_hasInitialCentered && widget.myTelemetry != null && widget.myTelemetry!.latitude != 0.0) {
       _hasInitialCentered = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -94,7 +130,132 @@ class _TacticalMapViewState extends State<TacticalMapView> {
           16.0,
         );
       });
+      return;
     }
+
+    _followLockedOperator();
+  }
+
+  /// Keeps the camera on the locked operator as their reports arrive.
+  ///
+  /// The zoom the operator has chosen is preserved rather than reset, so
+  /// pinching in to read terrain around a tracked member does not get undone by
+  /// their next position report four seconds later.
+  void _followLockedOperator() {
+    final locked = _lockedOperatorId;
+    if (locked == null) return;
+
+    final tele = _telemetryForOperatorId(locked);
+    if (tele == null || tele.latitude == 0.0 || tele.longitude == 0.0) return;
+
+    final target = LatLng(tele.latitude, tele.longitude);
+    final previous = _lastTrackedPosition;
+    if (previous != null &&
+        previous.latitude == target.latitude &&
+        previous.longitude == target.longitude) {
+      return;
+    }
+
+    _lastTrackedPosition = target;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _lockedOperatorId != locked) return;
+      _mapController.move(target, _mapController.camera.zoom);
+    });
+  }
+
+  void _handleFocusRequest() {
+    final request = widget.focusController?.pending;
+    if (request == null) return;
+    widget.focusController!.consume();
+
+    final tele = _telemetryForOperatorId(request.operatorId);
+    if (tele == null || tele.latitude == 0.0 || tele.longitude == 0.0) {
+      // Nothing to centre on. Say so rather than moving to the null island.
+      final profile = _profileForOperatorId(request.operatorId);
+      final who = profile?.callsign ?? 'OPERATOR';
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: Colors.amberAccent,
+            duration: const Duration(seconds: 3),
+            content: Text(
+              'NO POSITION REPORTED BY $who YET',
+              style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold),
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
+    setState(() {
+      if (request.lock) {
+        _lockedOperatorId = request.operatorId;
+        _lastTrackedPosition = null;
+      }
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final zoom = _mapController.camera.zoom;
+      _mapController.move(
+        LatLng(tele.latitude, tele.longitude),
+        zoom < 15.0 ? 16.0 : zoom,
+      );
+    });
+  }
+
+  /// Resolves telemetry for an operator, tolerating the ID/callsign mismatch
+  /// that position reports have historically arrived with.
+  Telemetry? _telemetryForOperatorId(String operatorId) {
+    final direct = widget.teamTelemetry[operatorId];
+    if (direct != null) return direct;
+
+    final profile = _profileForOperatorId(operatorId);
+    if (profile == null) return null;
+    return _telemetryForProfile(profile);
+  }
+
+  Telemetry? _telemetryForProfile(OperatorProfile peer) {
+    return widget.teamTelemetry[peer.id] ??
+        widget.teamTelemetry[peer.callsign] ??
+        widget.teamTelemetry.values.cast<Telemetry?>().firstWhere(
+              (t) =>
+                  t != null &&
+                  (t.operatorId.toUpperCase() == peer.id.toUpperCase() ||
+                      t.operatorId.toUpperCase() == peer.callsign.toUpperCase()),
+              orElse: () => null,
+            );
+  }
+
+  OperatorProfile? _profileForOperatorId(String operatorId) {
+    for (final p in widget.teamProfiles) {
+      if (p.id == operatorId || p.callsign.toUpperCase() == operatorId.toUpperCase()) {
+        return p;
+      }
+    }
+    return null;
+  }
+
+  /// Every paired member we hold a usable fix for, used by both the markers and
+  /// the off-screen edge indicators so the two can never disagree about who is
+  /// on the map.
+  List<MemberFix> _memberFixes() {
+    final fixes = <MemberFix>[];
+    for (final peer in widget.teamProfiles) {
+      if (peer.id == widget.myProfile.id) continue;
+      final tele = _telemetryForProfile(peer);
+      if (tele == null || tele.latitude == 0.0 || tele.longitude == 0.0) continue;
+      fixes.add(MemberFix(peer, tele));
+    }
+    return fixes;
+  }
+
+  void _disengageLock() {
+    setState(() {
+      _lockedOperatorId = null;
+      _lastTrackedPosition = null;
+    });
   }
 
   @override
@@ -105,6 +266,16 @@ class _TacticalMapViewState extends State<TacticalMapView> {
 
     final initialCenter = myPos ?? const LatLng(0.0, 0.0);
     final initialZoom = myPos != null ? 16.0 : 3.0;
+
+    final memberFixes = _memberFixes();
+    final lockedFix = _lockedOperatorId == null
+        ? null
+        : memberFixes.cast<MemberFix?>().firstWhere(
+              (f) =>
+                  f!.profile.id == _lockedOperatorId ||
+                  f.profile.callsign.toUpperCase() == _lockedOperatorId!.toUpperCase(),
+              orElse: () => null,
+            );
 
     return Scaffold(
       body: Stack(
@@ -164,7 +335,23 @@ class _TacticalMapViewState extends State<TacticalMapView> {
 
               // Profile Photo Markers Layer
               MarkerLayer(
-                markers: _buildProfileMarkers(myPos),
+                markers: _buildProfileMarkers(myPos, memberFixes),
+              ),
+
+              // Members who are off the edge of the viewport, kept on screen as
+              // chevrons so panning away never loses them entirely.
+              OffscreenMemberLayer(
+                members: memberFixes,
+                myPosition: myPos,
+                lockedOperatorId: _lockedOperatorId,
+                onTap: (profile) {
+                  final tele = _telemetryForProfile(profile);
+                  if (tele == null) return;
+                  _mapController.move(
+                    LatLng(tele.latitude, tele.longitude),
+                    _mapController.camera.zoom,
+                  );
+                },
               ),
             ],
           ),
@@ -261,6 +448,16 @@ class _TacticalMapViewState extends State<TacticalMapView> {
               ],
             ),
           ),
+
+          // Tracking banner. Present only while a lock is engaged, and it is
+          // the documented way out of one.
+          if (lockedFix != null)
+            Positioned(
+              top: (widget.activeSosOperatorCallsign != null ? 100 : 50) + 46,
+              left: 12,
+              right: 12,
+              child: _buildTrackingBanner(lockedFix, myPos),
+            ),
 
           // Vectoring Metrics Panel Overlay
           if (_activeVector != null)
@@ -376,7 +573,87 @@ class _TacticalMapViewState extends State<TacticalMapView> {
     }).toList();
   }
 
-  List<Marker> _buildProfileMarkers(LatLng? myPos) {
+  /// The banner shown while the camera is following an operator.
+  ///
+  /// Carries range and bearing as well as the identity, because "locked onto
+  /// BRAVO" without a range does not answer the question that made the operator
+  /// lock on in the first place.
+  Widget _buildTrackingBanner(MemberFix fix, LatLng? myPos) {
+    String detail = 'FOLLOWING POSITION REPORTS';
+    if (myPos != null) {
+      const geo = Distance();
+      final metres = geo.as(LengthUnit.Meter, myPos, fix.position);
+      final vec = VectorResult.calculate(
+        targetName: fix.profile.callsign,
+        fromLat: myPos.latitude,
+        fromLng: myPos.longitude,
+        fromAlt: widget.myTelemetry?.altitude ?? 0.0,
+        toLat: fix.position.latitude,
+        toLng: fix.position.longitude,
+        toAlt: fix.telemetry.altitude,
+        currentSpeedMps: widget.myTelemetry?.speed ?? 0.0,
+        currentCompassHeading: widget.myTelemetry?.heading ?? 0.0,
+      );
+      final range = metres < 1000
+          ? '${metres.round()}m'
+          : '${(metres / 1000).toStringAsFixed(1)}km';
+      detail = '$range · ${vec.azimuthDegrees.toStringAsFixed(0)}° · '
+          '${fix.telemetry.isStale ? 'FIX OVERDUE' : 'FIX CURRENT'}';
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0F172A).withValues(alpha: 0.94),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.cyanAccent),
+        boxShadow: [
+          BoxShadow(color: Colors.cyanAccent.withValues(alpha: 0.25), blurRadius: 12),
+        ],
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.gps_fixed, color: Colors.cyanAccent, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'TRACKING ${fix.profile.callsign}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  detail,
+                  style: const TextStyle(color: Colors.cyanAccent, fontSize: 9, fontWeight: FontWeight.bold),
+                ),
+              ],
+            ),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              minimumSize: const Size(0, 32),
+            ),
+            onPressed: _disengageLock,
+            child: const Text(
+              'RELEASE',
+              style: TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<Marker> _buildProfileMarkers(LatLng? myPos, List<MemberFix> memberFixes) {
     List<Marker> markers = [];
 
     // 1. My Profile Marker (ONLY if valid location acquired)
@@ -397,34 +674,18 @@ class _TacticalMapViewState extends State<TacticalMapView> {
     }
 
     // 2. Paired Squad Member Markers ONLY (Zero-Trust Privacy)
-    for (final peer in widget.teamProfiles) {
-      if (peer.id == widget.myProfile.id) continue;
-
-      // Find telemetry for paired squad member by operator ID or callsign
-      final tele = widget.teamTelemetry[peer.id] ??
-          widget.teamTelemetry[peer.callsign] ??
-          widget.teamTelemetry.values.cast<Telemetry?>().firstWhere(
-                (t) => t != null &&
-                    (t.operatorId.toUpperCase() == peer.id.toUpperCase() ||
-                     t.operatorId.toUpperCase() == peer.callsign.toUpperCase()),
-                orElse: () => null,
-              );
-
-      if (tele == null || tele.latitude == 0.0 || tele.longitude == 0.0) {
-        continue; // Skip if no active GPS telemetry received for this paired squad member
-      }
-
+    for (final fix in memberFixes) {
       markers.add(
         Marker(
           width: 48,
           height: 48,
-          point: LatLng(tele.latitude, tele.longitude),
+          point: fix.position,
           child: ProfileMarkerWidget(
-            profile: peer,
-            telemetry: tele,
-            isSelected: false,
+            profile: fix.profile,
+            telemetry: fix.telemetry,
+            isSelected: fix.profile.id == _lockedOperatorId,
             onTap: () {
-              _showOperatorContextSheet(peer, tele);
+              _showOperatorContextSheet(fix.profile, fix.telemetry);
             },
           ),
         ),
@@ -466,6 +727,32 @@ class _TacticalMapViewState extends State<TacticalMapView> {
                 ],
               ),
               const Divider(color: Colors.white12, height: 24),
+              if (_lockedOperatorId == target.id)
+                ListTile(
+                  leading: const Icon(Icons.gps_off, color: Colors.redAccent),
+                  title: const Text('RELEASE TRACKING LOCK', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _disengageLock();
+                  },
+                )
+              else
+                ListTile(
+                  leading: const Icon(Icons.gps_fixed, color: Colors.cyanAccent),
+                  title: const Text('LOCK ON & TRACK', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                  subtitle: const Text('Camera follows their position reports', style: TextStyle(color: Colors.white54, fontSize: 11)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    setState(() {
+                      _lockedOperatorId = target.id;
+                      _lastTrackedPosition = null;
+                    });
+                    _mapController.move(
+                      LatLng(targetTele.latitude, targetTele.longitude),
+                      _mapController.camera.zoom < 15.0 ? 16.0 : _mapController.camera.zoom,
+                    );
+                  },
+                ),
               ListTile(
                 leading: const Icon(Icons.radar, color: Colors.cyanAccent),
                 title: const Text('VECTOR TO TARGET (BEARING & RANGE)', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
@@ -633,7 +920,7 @@ class _TacticalMapViewState extends State<TacticalMapView> {
       color = Colors.cyanAccent;
     }
 
-    return Container(
+    final pill = Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         color: const Color(0xFF0F172A).withValues(alpha: 0.9),
@@ -662,8 +949,22 @@ class _TacticalMapViewState extends State<TacticalMapView> {
               ),
             ),
           ),
+          if (widget.onShowDiagnostics != null) ...[
+            const SizedBox(width: 4),
+            const Icon(Icons.info_outline, size: 12, color: Colors.white38),
+          ],
         ],
       ),
+    );
+
+    if (widget.onShowDiagnostics == null) return pill;
+
+    // The pill is the first thing an operator looks at when comms are wrong, so
+    // it is the natural handle for the detail behind it.
+    return InkWell(
+      borderRadius: BorderRadius.circular(20),
+      onTap: widget.onShowDiagnostics,
+      child: pill,
     );
   }
 }

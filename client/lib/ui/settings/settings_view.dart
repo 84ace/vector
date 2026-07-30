@@ -13,6 +13,10 @@ class SettingsView extends StatefulWidget {
   final VoidCallback onClearLogs;
   final VoidCallback onClearData;
 
+  /// Opens the live comms state behind the event log. The log says what happened;
+  /// this says what is happening.
+  final VoidCallback? onShowDiagnostics;
+
   const SettingsView({
     super.key,
     required this.myProfile,
@@ -22,6 +26,7 @@ class SettingsView extends StatefulWidget {
     required this.onRemoveContact,
     required this.onClearLogs,
     required this.onClearData,
+    this.onShowDiagnostics,
   });
 
   @override
@@ -362,13 +367,24 @@ class _SettingsViewState extends State<SettingsView> with SingleTickerProviderSt
                   ),
                 ],
               ),
-              if (widget.eventLogs.isNotEmpty)
-                TextButton.icon(
-                  style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
-                  icon: const Icon(Icons.clear_all, size: 14),
-                  label: const Text('CLEAR LOGS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
-                  onPressed: widget.onClearLogs,
-                ),
+              Row(
+                children: [
+                  if (widget.onShowDiagnostics != null)
+                    TextButton.icon(
+                      style: TextButton.styleFrom(foregroundColor: Colors.cyanAccent),
+                      icon: const Icon(Icons.lan, size: 14),
+                      label: const Text('NETWORK', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                      onPressed: widget.onShowDiagnostics,
+                    ),
+                  if (widget.eventLogs.isNotEmpty)
+                    TextButton.icon(
+                      style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                      icon: const Icon(Icons.clear_all, size: 14),
+                      label: const Text('CLEAR LOGS', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
+                      onPressed: widget.onClearLogs,
+                    ),
+                ],
+              ),
             ],
           ),
         ),

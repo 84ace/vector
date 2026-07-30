@@ -330,6 +330,7 @@ func (rs *RelayServer) unregisterClient(s *ClientSession) {
 func (rs *RelayServer) RouteEnvelope(env *MessageEnvelope) {
 	var targets []*ClientSession
 	var queueFor string
+	var undeliverable bool
 
 	rs.mu.RLock()
 	switch env.Type {
@@ -347,6 +348,11 @@ func (rs *RelayServer) RouteEnvelope(env *MessageEnvelope) {
 			targets = append(targets, session)
 		} else if env.RecipientID != "" {
 			queueFor = env.RecipientID
+		} else {
+			// A directed type with no recipient has nowhere to go. This used to
+			// fall through silently, which is indistinguishable from delivery
+			// from the sender's side.
+			undeliverable = true
 		}
 
 	case TypePing:
@@ -364,6 +370,17 @@ func (rs *RelayServer) RouteEnvelope(env *MessageEnvelope) {
 
 	if queueFor != "" {
 		rs.storeOfflineMessage(queueFor, env)
+	}
+
+	// Deliberately only the failures. Logging every successful route would build
+	// exactly the record of who-talks-to-whom that SECURITY.md warns this node
+	// can see, and would be dominated by telemetry besides. A packet that went
+	// nowhere is the case an operator needs to be able to reconstruct.
+	if undeliverable {
+		log.Printf("[RELAY] Undeliverable %s from %s: no recipient addressed", env.Type, env.SenderID)
+	}
+	if len(targets) == 0 && queueFor == "" && !undeliverable && env.Type != TypePing {
+		log.Printf("[RELAY] %s from %s reached no connected operator", env.Type, env.SenderID)
 	}
 }
 
@@ -383,7 +400,12 @@ func (rs *RelayServer) storeOfflineMessage(operatorID string, env *MessageEnvelo
 	}
 
 	if len(queue) >= maxOfflinePerOp {
-		queue = queue[1:] // Drop oldest.
+		// Dropping the oldest is the right choice — in a comms backlog the newest
+		// traffic is the useful part — but it was silent, so an operator who came
+		// back to a truncated backlog had no way to know anything was missing.
+		log.Printf("[RELAY] Offline queue for %s is full (%d), discarding oldest message",
+			operatorID, maxOfflinePerOp)
+		queue = queue[1:]
 	}
 	rs.offlineStore[operatorID] = append(queue, queuedEnvelope{env: env, queuedAt: time.Now()})
 }
@@ -401,14 +423,37 @@ func (rs *RelayServer) flushOfflineQueue(s *ClientSession) {
 	}
 
 	log.Printf("[RELAY] Flushing %d queued messages for operator %s", len(queue), s.OperatorID)
-	for _, q := range queue {
+	for i, q := range queue {
 		// Non-blocking: the queue can exceed the send buffer, and a peer that
 		// stops reading must not wedge this goroutine.
-		if !s.enqueue(q.env) {
-			log.Printf("[RELAY] Dropped queued message for %s while flushing (buffer full)", s.OperatorID)
-			return
+		if s.enqueue(q.env) {
+			continue
 		}
+
+		// The queue was removed from the store before delivery began, so simply
+		// returning here discarded every remaining message permanently — a slow
+		// reader on reconnect silently lost the tail of its own backlog. Put the
+		// undelivered remainder back and let the next reconnect try again.
+		remaining := queue[i:]
+		log.Printf("[RELAY] Send buffer full for %s while flushing, re-queueing %d message(s)",
+			s.OperatorID, len(remaining))
+		rs.requeueOffline(s.OperatorID, remaining)
+		return
 	}
+}
+
+// requeueOffline puts undelivered messages back at the front of the operator's
+// queue, preserving order against anything that arrived while the flush ran.
+func (rs *RelayServer) requeueOffline(operatorID string, undelivered []queuedEnvelope) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+
+	restored := append(append([]queuedEnvelope{}, undelivered...), rs.offlineStore[operatorID]...)
+	if len(restored) > maxOfflinePerOp {
+		// Keep the newest, consistent with storeOfflineMessage.
+		restored = restored[len(restored)-maxOfflinePerOp:]
+	}
+	rs.offlineStore[operatorID] = restored
 }
 
 func (s *ClientSession) writeLoop() {
