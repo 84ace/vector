@@ -63,6 +63,84 @@ cd client && flutter build apk \
 Certificates expire. Renewal has to restart or signal the node — it reads the
 certificate once at startup and does not watch the file.
 
+### Variant: TLS terminated by an existing reverse proxy
+
+If the node lives behind a reverse proxy that already does TLS for other
+services on the same box, it is simpler to let it terminate TLS for this node
+too rather than run `docker-compose.tls.yml` and manage a second certificate
+and a second open port. The backend stays on its plain `docker-compose.yml`
+(`ws://` on 8080, LAN-only), and the proxy forwards to it.
+
+This is how the `nas.local` deployment actually runs, fronted by an existing
+`nginx` container that already serves several other `*.84ace.com` subdomains:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name c2.84ace.com;
+
+    ssl_certificate     /etc/letsencrypt/live/c2.84ace.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/c2.84ace.com/privkey.pem;
+
+    location / {
+        proxy_pass http://192.168.0.130:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # The relay protocol is a long-lived WebSocket (telemetry every 4s per
+        # operator, plus call signalling), not a request/response API.
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_buffering off;
+        proxy_read_timeout 86400;
+    }
+}
+```
+
+Client build points at the proxy's hostname with no port — same as any other
+Path A deployment, and still no CA to pin:
+
+```bash
+cd client && flutter build apk \
+  --dart-define=CLOUD_MESH_NODE_URL=https://c2.84ace.com \
+  --dart-define=TRANSPORT_POLICY=tls-only
+```
+
+**Getting the certificate hit a real snag worth recording.** `84ace.com` is a
+Cloudflare zone whose `*` record is a CNAME to a TP-Link DDNS hostname
+(`84acenas.tplinkdns.com`), kept current by a DDNS client on the DSL modem.
+That hostname's own nameservers (`ns{1,2,4,5}.tplinkdns.com`) answer
+inconsistently across resolvers — direct queries mostly succeeded, but Let's
+Encrypt's multi-perspective validation, which checks from several vantage
+points at once, hit `NXDOMAIN` and `SERVFAIL` from different ones on the same
+name a few seconds apart. HTTP-01 (`certbot certonly --webroot`) depends on
+that CNAME chain resolving everywhere at once, so it failed twice before we
+gave up on it.
+
+DNS-01 against Cloudflare directly sidesteps this: the challenge is a TXT
+record written straight into the Cloudflare zone, which Let's Encrypt then
+checks against Cloudflare's own nameservers — it never has to follow the CNAME
+into the flaky TP-Link hop.
+
+```bash
+docker run --rm \
+  -v /home/acea/Documents/nas-local/config/letsencrypt:/etc/letsencrypt \
+  certbot/dns-cloudflare certonly \
+  --dns-cloudflare \
+  --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
+  -d c2.84ace.com --key-type ecdsa -n
+```
+
+`cloudflare.ini` holds a Cloudflare API token scoped to `Zone / DNS / Edit` on
+the `84ace.com` zone only (not a global key), `chmod 600`, one line:
+`dns_cloudflare_api_token = ...`. It lives alongside the other Let's Encrypt
+state on that box rather than in this repo. Whoever renews this certificate
+next should use `dns-cloudflare`, not the webroot flow the other subdomains on
+that box use — the DDNS flakiness above is not something that resolved itself,
+it is a property of the DDNS provider.
+
 ## Path B — isolated node with an internal CA
 
 An isolated network cannot use Let's Encrypt: there is no ACME challenge it can
@@ -240,7 +318,7 @@ flutter run                     # or: flutter build ios --simulator
 ```bash
 flutter build ios --simulator
 xcrun simctl install booted build/ios/iphonesimulator/Runner.app
-xcrun simctl launch booted com.tactical.c2.vectorC2
+xcrun simctl launch booted com.tactical.vector
 ```
 
 The simulator has no camera, so QR scanning cannot be exercised there — use the
