@@ -993,9 +993,17 @@ class _MainShellViewState extends State<MainShellView> {
     final applicant = await _channel.openPairRequest(msg);
     if (applicant == null) return;
 
-    if (_findContact(applicant.id) != null || _activePairingDialogs.contains(applicant.id)) {
-      return;
-    }
+    // An operator who is already a contact is allowed to pair again.
+    //
+    // This used to return here, which made a re-pair a no-op on whichever side
+    // still held the contact: it never reset its session and never sent a
+    // PAIR_ACK, so a desynchronised ratchet could not be repaired from either
+    // end without deleting the contact first — and deleting on only one side
+    // reproduced the same fault. The approval dialog still gates it, and it
+    // still shows the safety number, so re-pairing is no more trusting than
+    // pairing was; it is the same decision, taken again.
+    if (_activePairingDialogs.contains(applicant.id)) return;
+    final isRepair = _findContact(applicant.id) != null;
 
     Map<String, dynamic> data;
     try {
@@ -1008,6 +1016,18 @@ class _MainShellViewState extends State<MainShellView> {
     if (tokenId.isNotEmpty && _consumedPairingTokens.contains(tokenId)) {
       _notifyTokenReuseSecurityAlert(applicant, tokenId);
     } else {
+      if (isRepair) {
+        // Worth a line in the log: approving this discards the existing secure
+        // session with an operator already trusted, which is the intended repair
+        // but is also exactly what an attacker would want to induce. The safety
+        // number in the dialog is what distinguishes the two.
+        _addEventLog(
+          'RE-PAIRING REQUESTED',
+          '${applicant.callsign} (${applicant.id}) asked to pair again. Approving '
+              'replaces the existing secure session. Check the safety number.',
+          EventSeverity.warning,
+        );
+      }
       _showPairingApprovalDialog(applicant, tokenId);
     }
   }
@@ -1596,6 +1616,16 @@ class _MainShellViewState extends State<MainShellView> {
     await _consumeToken(tokenId);
     await _storeContact(newProfile);
 
+    // A pairing establishes a fresh relationship, so it must not inherit the
+    // chain position of an old one. Without this, re-pairing an operator whose
+    // ratchet had desynchronised silently resumed the broken session — so the
+    // obvious field repair, "pair again", could not repair anything, and every
+    // message continued to fail as "message key already used".
+    //
+    // The approver does the same in _acceptPairing, which makes PAIR_ACK the
+    // first message of the new session at both ends.
+    await _pairwiseEngine.forgetPeer(newProfile.kexPublicKey);
+
     if (!sendPairRequest) return;
 
     _pendingPairRequests.add(newProfile.id);
@@ -1630,6 +1660,13 @@ class _MainShellViewState extends State<MainShellView> {
   Future<void> _acceptPairing(OperatorProfile applicant, String tokenId) async {
     await _consumeToken(tokenId);
     await _storeContact(applicant);
+
+    // Discard any previous session before sealing the acknowledgement, so the
+    // PAIR_ACK below is the first message of the new one. The requester dropped
+    // its side in _addContactDirectly, so both ends restart from the static
+    // keys together — a one-sided reset would leave the chains further apart
+    // than it found them.
+    await _pairwiseEngine.forgetPeer(applicant.kexPublicKey);
 
     await _sendControl(applicant, {
       'action': 'PAIR_ACK',
