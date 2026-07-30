@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -105,6 +106,19 @@ type RelayServer struct {
 	offlineStore map[string][]queuedEnvelope
 	upgrader     websocket.Upgrader
 	stop         chan struct{}
+
+	// logRouting logs every routing decision, including the successful ones.
+	//
+	// Off unless RELAY_LOG_ROUTING is set, and deliberately so: a permanent
+	// record of who sent what to whom, when, is precisely the metadata
+	// SECURITY.md warns this node is in a position to collect, and it would be
+	// dominated by telemetry — every operator, every few seconds.
+	//
+	// It exists because the alternative, while diagnosing why a message did not
+	// arrive, is having no way to tell "the sender never transmitted" from "the
+	// relay delivered it and the recipient discarded it". Those need opposite
+	// fixes. Turn it on for a test, read the answer, turn it off.
+	logRouting bool
 }
 
 // NewRelayServer initializes the relay server.
@@ -123,6 +137,7 @@ func NewRelayServer(allowedOrigins []string) *RelayServer {
 		clients:      make(map[string]*ClientSession),
 		offlineStore: make(map[string][]queuedEnvelope),
 		stop:         make(chan struct{}),
+		logRouting:   os.Getenv("RELAY_LOG_ROUTING") != "",
 		upgrader: websocket.Upgrader{
 			HandshakeTimeout: 10 * time.Second,
 			CheckOrigin: func(r *http.Request) bool {
@@ -361,6 +376,15 @@ func (rs *RelayServer) RouteEnvelope(env *MessageEnvelope) {
 		}
 	}
 	rs.mu.RUnlock()
+
+	if rs.logRouting {
+		names := make([]string, 0, len(targets))
+		for _, t := range targets {
+			names = append(names, t.OperatorID)
+		}
+		log.Printf("[ROUTE] %s id=%s from=%s to=%q targets=%v queue=%q",
+			env.Type, env.ID, env.SenderID, env.RecipientID, names, queueFor)
+	}
 
 	for _, session := range targets {
 		if !session.enqueue(env) {
