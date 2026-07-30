@@ -208,6 +208,28 @@ The public servers are unreachable on such a network anyway, and leaving them
 configured only adds candidate-gathering delay to every call. With STUN off,
 host candidates carry the call, which is all a LAN needs.
 
+## Building the client for iOS
+
+`flutter build ios` works for the device, profile and simulator configurations.
+Two environment notes, both of which have cost time before:
+
+- **`pod install` needs a UTF-8 locale.** Under Ruby 4.x, CocoaPods 1.16 raises
+  `Unicode Normalization not appropriate for ASCII-8BIT` if `LANG` is unset —
+  from a bare shell or a CI runner, for instance. Export it first:
+
+  ```bash
+  export LANG=en_US.UTF-8
+  ```
+
+- **`mobile_scanner` cannot run on an Apple Silicon iOS 26+ simulator.** Its
+  podspec excludes `arm64` for `iphonesimulator`, so MLKit and the plugin are
+  never built for the only architecture those simulators offer. The build still
+  *succeeds* — Flutter prints a list of the affected targets and produces an
+  x86_64 simulator binary — but it will not install on a modern simulator. Test
+  QR pairing on a physical device, or upgrade to `mobile_scanner` 7.x, which
+  drops MLKit for the Vision API. That upgrade is a major version bump touching
+  the pairing UI and has not been done.
+
 ## Notes
 
 - `ALLOWED_ORIGINS` only matters for browser clients. Native clients send no
