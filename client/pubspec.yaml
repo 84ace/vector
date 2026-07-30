@@ -20,7 +20,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # App Store archive shipped CFBundleVersion=2 while this file said +1, so the
 # number the binary actually carried was not the one recorded here — and App
 # Store Connect refuses a duplicate build number for a given version.
-version: 1.0.0+4
+version: 1.0.0+5
 
 environment:
   sdk: ^3.11.4

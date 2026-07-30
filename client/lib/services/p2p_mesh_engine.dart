@@ -83,6 +83,19 @@ class P2PMeshEngine {
   final Map<String, _PeerLink> _peerLinks = {};
   final Set<String> _dialing = {};
 
+  /// Set when the link port was already taken, which means another copy of this
+  /// app holds this device's identity. See [start].
+  bool _instanceConflict = false;
+  bool get hasInstanceConflict => _instanceConflict;
+
+  /// EADDRINUSE across platforms: 48 on macOS/BSD, 98 on Linux/Android, 10048
+  /// on Windows. Matched on the code rather than the message, which is
+  /// localised and has changed between Dart releases.
+  static bool _isAddressInUse(SocketException e) {
+    final code = e.osError?.errorCode;
+    return code == 48 || code == 98 || code == 10048;
+  }
+
   final _incomingController = StreamController<C2Message>.broadcast();
   final _peersController = StreamController<List<PeerDevice>>.broadcast();
   final _linkRefusalController = StreamController<String>.broadcast();
@@ -146,9 +159,23 @@ class P2PMeshEngine {
       _server = await HttpServer.bind(InternetAddress.anyIPv4, p2pPort);
       debugPrint('[P2P_ENGINE] Listening on port $p2pPort');
       _listenHttpServer();
+    } on SocketException catch (e) {
+      debugPrint('[P2P_ENGINE] Could not bind link server on $p2pPort: $e');
+      // An address already in use almost always means a second copy of this app
+      // is running on the same machine — and that is not a degraded P2P mesh, it
+      // is two processes sharing one identity and one ratchet store. Both
+      // authenticate to the relay under the same operator ID and both consume
+      // from the same receiving chain, so each message decrypts once and is
+      // reported by the other as "message key already used". The app has to stop
+      // rather than carry on as the second writer.
+      if (_isAddressInUse(e)) {
+        _instanceConflict = true;
+        return;
+      }
+      return; // Without this there is no P2P at all.
     } catch (e) {
       debugPrint('[P2P_ENGINE] Could not bind link server on $p2pPort: $e');
-      return; // Without this there is no P2P at all.
+      return;
     }
 
     await _startDiscovery();

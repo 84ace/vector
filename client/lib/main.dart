@@ -122,6 +122,10 @@ class _MainShellViewState extends State<MainShellView> {
   /// rather than starting up with keys it could not protect.
   SecureStorageUnavailable? _storageFailure;
   RelayTrustAnchorInvalid? _trustAnchorFailure;
+
+  /// Another copy of this app is already running. Blocking, like the failures
+  /// above: continuing would corrupt the ratchet state both copies share.
+  bool _instanceConflict = false;
   OperatorProfile? _activeCallPeer;
 
   late OperatorIdentity _identity;
@@ -290,7 +294,46 @@ class _MainShellViewState extends State<MainShellView> {
     if (mounted) setState(() => _isLoading = false);
   }
 
+  /// Shuts down everything [_initializeServices] started.
+  ///
+  /// Extracted so that bringing the services up twice in one process cannot
+  /// leave the first set running. It could, and the consequences were severe:
+  /// clearing all data stopped only the background service and the key
+  /// distributor, so the previous relay socket stayed open and authenticated
+  /// under the *old* operator ID, the previous telemetry timer kept transmitting
+  /// as it, and — worst — the previous stream subscriptions stayed live while
+  /// onboarding appended a second set.
+  ///
+  /// Every incoming envelope was then handed to the ratchet twice. The first
+  /// pass decrypted it and consumed the message key; the second reported
+  /// "message key already used (replay or duplicate)" and the message was
+  /// discarded. Calls and messages stopped arriving, on a brand-new session,
+  /// and clearing all data to recover was the very thing that caused it.
+  Future<void> _teardownServices() async {
+    _pairRetryTimer?.cancel();
+    _pairRetryTimer = null;
+
+    for (final sub in _subscriptions) {
+      await sub.cancel();
+    }
+    _subscriptions.clear();
+
+    if (!_myProfileInitialized) return;
+
+    await _backgroundComms.stop();
+    await PttAudioService.disposeGlobalListener();
+    await _callService.dispose();
+    await _telemetryService.dispose();
+    await _p2pMeshEngine.dispose();
+    await _meshClient.dispose();
+    _teamKeyDistributor.dispose();
+  }
+
   Future<void> _initializeServices(OperatorProfile profile) async {
+    // Idempotent by construction: a second call must replace the first set of
+    // services, never race it.
+    await _teardownServices();
+
     try {
       await [
         Permission.microphone,
@@ -603,6 +646,13 @@ class _MainShellViewState extends State<MainShellView> {
 
     _meshClient.start();
     await _p2pMeshEngine.start();
+    // A taken link port means another copy of this app already holds this
+    // device's identity. Two writers on one ratchet store desynchronise it, so
+    // this stops rather than becoming the second.
+    if (_p2pMeshEngine.hasInstanceConflict && mounted) {
+      setState(() => _instanceConflict = true);
+      return;
+    }
     await _telemetryService.startReporting();
 
     // Started here, in the foreground, and not from a lifecycle callback:
@@ -1790,6 +1840,8 @@ class _MainShellViewState extends State<MainShellView> {
 
   @override
   Widget build(BuildContext context) {
+    if (_instanceConflict) return _buildInstanceConflictScreen();
+
     final failure = _storageFailure;
     if (failure != null) return _buildStorageFailureScreen(failure);
 
@@ -1871,8 +1923,11 @@ class _MainShellViewState extends State<MainShellView> {
         },
         onClearData: () async {
           await _notifyContactsOfPurge();
-          // Nothing left to run in the background once the identity is gone.
-          await _backgroundComms.stop();
+          // Everything, not just the background service. The relay socket and
+          // the telemetry timer would otherwise keep running under the identity
+          // being destroyed, and the live stream subscriptions would survive
+          // into the next onboarding and double-process every envelope.
+          await _teardownServices();
 
           final prefs = await SharedPreferences.getInstance();
           await prefs.clear();
@@ -1885,11 +1940,6 @@ class _MainShellViewState extends State<MainShellView> {
           // Ratchet state derives every future message key for every
           // conversation, so it has to go the same way the identity keys do.
           await _pairwiseEngine.destroyAllSessions();
-
-          // prefs.clear() drops the persisted list, but the live distributor is
-          // still holding it in memory with a retry timer running. Onboarding
-          // builds a fresh one.
-          _teamKeyDistributor.dispose();
 
           setState(() {
             _myProfileInitialized = false;
@@ -1960,6 +2010,51 @@ class _MainShellViewState extends State<MainShellView> {
           hasPinnedRelayCa: _relayCaPemEnv.trim().isNotEmpty,
           ice: WebRtcCallService.iceConfiguration,
           teamProfiles: _teamProfiles,
+        ),
+      ),
+    );
+  }
+
+  /// Shown when a second copy of the app is running.
+  ///
+  /// Blocking rather than a warning. Two copies share one identity, one keychain
+  /// and one ratchet store: both authenticate to the relay under the same
+  /// operator ID, both receive every envelope, and each message key is consumed
+  /// by whichever copy reads it first — so the other reports "message key
+  /// already used" and drops it. Calls and messages stop arriving with nothing
+  /// on screen to explain why, which cost an evening to find from the outside.
+  Widget _buildInstanceConflictScreen() {
+    return Scaffold(
+      backgroundColor: C2Colors.slateBg,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.copy_all, color: Colors.redAccent, size: 64),
+              const SizedBox(height: 24),
+              const Text(
+                'VECTOR IS ALREADY RUNNING',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 1.0,
+                ),
+              ),
+              const SizedBox(height: 14),
+              const Text(
+                'Another copy of Vector holds this device\'s identity. Two copies '
+                'would share one set of message keys, and each message would '
+                'decrypt in only one of them — so calls and messages would stop '
+                'arriving in both.\n\n'
+                'Close the other copy, then reopen this one.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.6),
+              ),
+            ],
+          ),
         ),
       ),
     );
